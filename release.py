@@ -90,6 +90,8 @@ def go_build():
                 zf.write('chn.list')
                 zf.write('chn_domain.list')
                 zf.write('LICENSE')
+                if os_env['GOOS'] == 'windows':
+                    zf.write('scripts\windows\mos-chinadns-WinSW.xml','mos-chinadns-WinSW.xml')
 
         except subprocess.CalledProcessError as e:
             logger.error(f'build {zip_filename} failed: {e.args}')
