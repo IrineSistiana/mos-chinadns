@@ -173,7 +173,7 @@ func printStatus(entry *logrus.Entry, d time.Duration) {
 	for {
 		time.Sleep(d)
 		runtime.ReadMemStats(m)
-		entry.Infof("HeapObjects: %d NumGC: %d PauseTotalNs: %d, NumGoroutine: %d", m.HeapObjects, m.NumGC, m.PauseTotalNs, runtime.NumGoroutine())
+		entry.Infof("printStatus: HeapObjects: %d NumGC: %d PauseTotalNs: %d, NumGoroutine: %d", m.HeapObjects, m.NumGC, m.PauseTotalNs, runtime.NumGoroutine())
 	}
 }
 

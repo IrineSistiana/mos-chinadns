@@ -293,7 +293,7 @@ func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.
 				case policyActionDeny:
 					doLocal = false
 				}
-				requestLogger.Debugf("serveDNS: localDomainPolicies: accept: %v, force %v", doLocal, forceLocal)
+				requestLogger.Debugf("serveDNS: localDomainPolicies: dl: %v, fl %v", doLocal, forceLocal)
 			}
 		}
 	}
@@ -323,19 +323,17 @@ func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.
 		upstreamWG.Add(1)
 		go func() {
 			defer upstreamWG.Done()
-			requestLogger.Debug("serveDNS: query local server")
 			rRaw, rtt, err := d.queryLocal(ctx, q, qRaw, requestLogger)
 			if err != nil {
 				if ctx.Err() == nil {
-					requestLogger.Warnf("serveDNS: local server failed: %v", err)
+					requestLogger.Warnf("serveDNS: local server failed after %dms: %v, ", rtt.Milliseconds(), err)
 				}
 				close(localServerFailed)
 				return
 			}
 
-			requestLogger.Debugf("serveDNS: get reply from local, rtt: %dms", rtt.Milliseconds())
 			if !forceLocal && !d.acceptLocalRes(rRaw, requestLogger) {
-				requestLogger.Debug("serveDNS: local result denied")
+				requestLogger.Debugf("serveDNS: local result denied, rtt: %dms", rtt.Milliseconds())
 				bufpool.ReleaseMsgBuf(rRaw)
 				close(localServerFailed)
 				return
@@ -343,10 +341,11 @@ func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.
 
 			select {
 			case resChan <- rRaw:
+				requestLogger.Debugf("serveDNS: local result accepted, rtt: %dms", rtt.Milliseconds())
 			default:
 				bufpool.ReleaseMsgBuf(rRaw)
+				requestLogger.Debugf("serveDNS: local result dropped, rtt: %dms", rtt.Milliseconds())
 			}
-			requestLogger.Debug("serveDNS: local result accepted")
 			close(localServerDone)
 		}()
 	}
@@ -368,12 +367,10 @@ func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.
 		upstreamWG.Add(1)
 		go func() {
 			defer upstreamWG.Done()
-
-			requestLogger.Debug("serveDNS: query remote server")
 			rRaw, rtt, err := d.queryRemote(ctx, q, qRaw, requestLogger)
 			if err != nil {
 				if ctx.Err() == nil {
-					requestLogger.Warnf("serveDNS: remote server failed: %v", err)
+					requestLogger.Warnf("serveDNS: remote server failed after %dms: %v", rtt.Milliseconds(), err)
 				}
 				return
 			}
