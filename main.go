@@ -140,7 +140,7 @@ func main() {
 
 	startServerExitWhenFailed := func(network string) {
 		entry.Infof("main: %s server started", network)
-		if err := d.ListenAndServe(network, c.Bind.Addr, 1480); err != nil {
+		if err := d.ListenAndServe(network, c.Bind.Addr, maxUDPSize); err != nil {
 			entry.Fatalf("main: %s server exited with err: %v", network, err)
 		} else {
 			entry.Infof("main: %s server exited", network)

@@ -36,26 +36,22 @@ import (
 
 const (
 	tlsHandshakeTimeout = time.Second * 3
+	dialTCPTimeout      = time.Second * 2
+	dialUDPTimeout      = time.Second * 2
 )
 
 type upstream interface {
 	Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw []byte, rtt time.Duration, err error)
 }
 
-type upstreamTCP struct {
-	addr string
-}
+// upstreamCommon represents a tcp/tls server
+type upstreamCommon struct {
+	addr        string
+	dialNewConn func() (net.Conn, error)
+	writeMsg    func(c net.Conn, msg []byte) error
+	readMsg     func(c net.Conn) (msg []byte, err error)
 
-type upstreamUDP struct {
-	addr       string
-	maxUDPSize int
-	cp         *connPool
-}
-
-type upstreamTLS struct {
-	addr      string
-	tlsConfig *tls.Config
-	cp        *connPool
+	cp *connPool
 }
 
 func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error) {
@@ -66,15 +62,30 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 	var client upstream
 	var err error
 	switch sc.Protocol {
-	case "tcp":
-		client = &upstreamTCP{
-			addr: sc.Addr,
-		}
 	case "udp", "":
-		client = &upstreamUDP{
-			addr:       sc.Addr,
-			maxUDPSize: 1480,
-			cp:         newConnPool(0xffff, time.Second*10, time.Second*5),
+		dialUDP := func() (net.Conn, error) {
+			return net.DialTimeout("udp", sc.Addr, dialUDPTimeout)
+		}
+		readUDPMsg := func(c net.Conn) (msg []byte, err error) {
+			return readMsgFromUDP(c, maxUDPSize)
+		}
+		client = &upstreamCommon{
+			addr:        sc.Addr,
+			dialNewConn: dialUDP,
+			readMsg:     readUDPMsg,
+			writeMsg:    writeMsgToUDP,
+			cp:          newConnPool(0xffff, time.Second*10, time.Second*5),
+		}
+	case "tcp":
+		dialTCP := func() (net.Conn, error) {
+			return net.DialTimeout("tcp", sc.Addr, dialTCPTimeout)
+		}
+		client = &upstreamCommon{
+			addr:        sc.Addr,
+			dialNewConn: dialTCP,
+			readMsg:     readMsgFromTCP,
+			writeMsg:    writeMsgToTCP,
+			cp:          newConnPool(0xffff, time.Second*10, time.Second*5),
 		}
 	case "dot":
 		tlsConf := &tls.Config{
@@ -84,10 +95,24 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 		}
 
 		timeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
-		client = &upstreamTLS{
-			addr:      sc.Addr,
-			tlsConfig: tlsConf,
-			cp:        newConnPool(0xffff, timeout, timeout>>1),
+		dialTLS := func() (net.Conn, error) {
+			c, err := net.DialTimeout("tcp", sc.Addr, dialTCPTimeout)
+			if err != nil {
+				return nil, err
+			}
+			tlsConn := tls.Client(c, tlsConf)
+			tlsConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
+			// try handshake first
+			if err := tlsConn.Handshake(); err != nil {
+				c.Close()
+				return nil, err
+			}
+			return tlsConn, nil
+		}
+		client = &upstreamCommon{
+			addr:        sc.Addr,
+			dialNewConn: dialTLS,
+			cp:          newConnPool(0xffff, timeout, timeout>>1),
 		}
 	case "doh":
 		tlsConf := &tls.Config{
@@ -110,146 +135,17 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 	return client, nil
 }
 
-func (u *upstreamTCP) Exchange(ctx context.Context, qRaw []byte, _ *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
-	t := time.Now()
-	r, err := u.exchange(ctx, qRaw)
-	return r, time.Since(t), err
-}
-
-func (u *upstreamTCP) exchange(ctx context.Context, qRaw []byte) (rRaw []byte, err error) {
-	queryCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	d := net.Dialer{}
-	c, err := d.DialContext(ctx, "tcp", u.addr)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-
-	go func() {
-		select {
-		case <-queryCtx.Done():
-			c.SetDeadline(time.Now())
-		}
-	}()
-
-	err = writeMsgToTCP(c, qRaw)
-	if err != nil {
-		return nil, err
-	}
-	rRaw, err = readMsgFromTCP(c)
-	if err != nil {
-		return nil, err
-	}
-
-	msgID := utils.GetMsgID(qRaw)
-	if utils.GetMsgID(rRaw) != msgID {
-		bufpool.ReleaseMsgBuf(rRaw)
-		return nil, dns.ErrId
-	}
-	return rRaw, nil
-}
-
-func (u *upstreamUDP) Exchange(ctx context.Context, qRaw []byte, _ *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
-	t := time.Now()
-	rRaw, err = u.exchange(ctx, qRaw)
-	return rRaw, time.Since(t), err
-}
-
-func (u *upstreamUDP) exchange(ctx context.Context, qRaw []byte) (rRaw []byte, err error) {
-	queryCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var isNewConn bool
-	c := u.cp.get()
-	if c == nil {
-		d := net.Dialer{}
-		c, err = d.DialContext(ctx, "udp", u.addr)
-		if err != nil {
-			return nil, err
-		}
-		isNewConn = true
-	}
-	c.SetDeadline(time.Time{})
-
-	// this once is to make sure that the following
-	// c.SetDeadline wouldn't be called after exchange() is returned
-	once := sync.Once{}
-	defer once.Do(func() {}) // do nothing, just fire the once
-	go func() {
-		select {
-		case <-queryCtx.Done():
-			once.Do(func() { c.SetDeadline(time.Now()) })
-		}
-	}()
-
-	_, err = c.Write(qRaw)
-	if err != nil {
-		c.Close()
-		return nil, err
-	}
-
-	buf := bufpool.AcquireMsgBuf(u.maxUDPSize)
-	defer bufpool.ReleaseMsgBuf(buf)
-read:
-	n, err := c.Read(buf)
-	if err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() && ctx.Err() != nil {
-			// err caused by cancelled ctx, it's ok to reuse the connection
-			u.cp.put(c)
-			return nil, err
-		}
-		c.Close()
-		return nil, err
-	}
-
-	if n < 12 {
-		c.Close()
-		return nil, dns.ErrShortRead
-	}
-	data := buf[:n]
-	if utils.GetMsgID(data) != utils.GetMsgID(qRaw) {
-		if !isNewConn {
-			// this connection is reused, data might be the reply
-			// of last qRaw, not this qRaw.
-			// try to read again
-			goto read
-		} else {
-			// new connection should never receive a mismatched id, this is an error
-			c.Close()
-			return nil, dns.ErrId
-		}
-	}
-
-	u.cp.put(c)
-	rRaw = bufpool.AcquireMsgBufAndCopy(data)
-	return rRaw, nil
-}
-
-func (u *upstreamTLS) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
+func (u *upstreamCommon) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
 	t := time.Now()
 	rRaw, err = u.exchange(ctx, qRaw, entry, false)
 	return rRaw, time.Since(t), err
 }
 
-func (u *upstreamTLS) dial(ctx context.Context) (net.Conn, error) {
-	d := net.Dialer{}
-	c, err := d.DialContext(ctx, "tcp", u.addr)
-	if err != nil {
-		return nil, err
-	}
-	tlsConn := tls.Client(c, u.tlsConfig)
-	tlsConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
-	// try handshake first
-	if err := tlsConn.Handshake(); err != nil {
+func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry, forceNewConn bool) (rRaw []byte, err error) {
+	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	return tlsConn, nil
-}
-
-func (u *upstreamTLS) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry, forceNewConn bool) (rRaw []byte, err error) {
 	queryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -261,11 +157,11 @@ func (u *upstreamTLS) exchange(ctx context.Context, qRaw []byte, entry *logrus.E
 
 	// if we need a new conn
 	if c == nil {
-		tlsConn, err := u.dial(ctx)
+		newConn, err := u.dialNewConn()
 		if err != nil {
 			return nil, err
 		}
-		c = tlsConn
+		c = newConn
 		isNewConn = true
 	}
 	c.SetDeadline(time.Time{})
@@ -273,7 +169,6 @@ func (u *upstreamTLS) exchange(ctx context.Context, qRaw []byte, entry *logrus.E
 	// this once is to make sure that the following
 	// c.SetDeadline wouldn't be called after exchange() is returned
 	once := sync.Once{}
-	defer once.Do(func() {}) // do nothing, just fire the once
 	go func() {
 		select {
 		case <-queryCtx.Done():
@@ -281,41 +176,17 @@ func (u *upstreamTLS) exchange(ctx context.Context, qRaw []byte, entry *logrus.E
 		}
 	}()
 
-	// we might spend too much time on tlsConn.Handshake()
+	// we might spend too much time on dialNewConn
 	// deadline might have been passed, write might get a err, but the conn is healty.
-	err = writeMsgToTCP(c, qRaw)
+	err = u.writeMsg(c, qRaw)
 	if err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() && ctx.Err() != nil {
-			// err caused by cancelled ctx, it's ok to reuse the connection
-			u.cp.put(c)
-			return nil, err
-		}
-
-		if isNewConn { // we don't try another write for new connection
-			c.Close()
-			return nil, err
-		}
-
-		c.Close()
-		// reused connection got an unexpected err, open a new conn and try write again
-		return u.exchange(ctx, qRaw, entry, true)
+		goto ioErr
 	}
 
 read:
-	rRaw, err = readMsgFromTCP(c)
+	rRaw, err = u.readMsg(c)
 	if err != nil {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() && ctx.Err() != nil {
-			// err caused by cancelled ctx, it's ok to reuse the connection
-			u.cp.put(c)
-			return nil, err
-		}
-
-		if isNewConn {
-			c.Close()
-			return nil, err
-		}
-		c.Close()
-		return u.exchange(ctx, qRaw, entry, true) // reused connection, let's try a new connection
+		goto ioErr
 	}
 
 	if utils.GetMsgID(rRaw) != utils.GetMsgID(qRaw) {
@@ -332,8 +203,25 @@ read:
 		}
 	}
 
+	once.Do(func() {}) // do nothing, just fire the once
 	u.cp.put(c)
 	return rRaw, nil
+
+ioErr:
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() && queryCtx.Err() != nil {
+		// err caused by cancelled ctx, it's ok to reuse the connection
+		once.Do(func() {}) // do nothing, just fire the once
+		u.cp.put(c)
+		return nil, err
+	}
+	c.Close()
+
+	if isNewConn { // new connection shouldn't have any err
+		return nil, err
+	}
+
+	// reused connection got an unexpected err, open a new conn and try again
+	return u.exchange(ctx, qRaw, entry, true)
 }
 
 type connPool struct {

@@ -38,12 +38,19 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	maxUDPSize = 1480
+)
+
 var (
 	errAllServersFailed  = errors.New("all servers are failed")
 	errAllServersTimeout = errors.New("all server timeout")
 )
 
 type dispatcher struct {
+	entry                *logrus.Entry
+	maxConcurrentQueries int
+
 	local struct {
 		client upstream
 
@@ -63,8 +70,6 @@ type dispatcher struct {
 		local  *dns.EDNS0_SUBNET
 		remote *dns.EDNS0_SUBNET
 	}
-
-	entry *logrus.Entry
 }
 
 const (
@@ -99,6 +104,11 @@ func releaseTimer(timer *time.Timer) {
 func initDispatcher(conf *Config, entry *logrus.Entry) (*dispatcher, error) {
 	d := new(dispatcher)
 	d.entry = entry
+	if conf.Dispatcher.MaxConcurrentQueries <= 0 {
+		d.maxConcurrentQueries = 150
+	} else {
+		d.maxConcurrentQueries = conf.Dispatcher.MaxConcurrentQueries
+	}
 
 	var rootCAs *x509.CertPool
 	var err error
@@ -232,7 +242,7 @@ func isUnusualType(q *dns.Msg) bool {
 
 func (d *dispatcher) serveDNS(q *dns.Msg, entry *logrus.Entry) (r *dns.Msg) {
 	rRaw := d.serveRawDNS(q, nil, entry)
-	if cap(rRaw) == 0 {
+	if rRaw == nil {
 		return nil
 	}
 
@@ -241,6 +251,7 @@ func (d *dispatcher) serveDNS(q *dns.Msg, entry *logrus.Entry) (r *dns.Msg) {
 	bufpool.ReleaseMsgBuf(rRaw)
 	if err != nil {
 		entry.Warnf("serveDNS: Unpack: %v", err)
+		return nil
 	}
 	return r
 }

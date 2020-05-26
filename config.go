@@ -31,6 +31,10 @@ type Config struct {
 		Protocol string `yaml:"protocol"`
 	} `yaml:"bind"`
 
+	Dispatcher struct {
+		MaxConcurrentQueries int `yaml:"max_concurrent_queries"`
+	} `yaml:"dispatcher"`
+
 	Server struct {
 		Local struct {
 			BasicServerConfig `yaml:"basic,inline"`

@@ -58,3 +58,23 @@ func writeMsgToTCP(c net.Conn, m []byte) (err error) {
 	_, err = (&net.Buffers{l, m}).WriteTo(c)
 	return err
 }
+
+func writeMsgToUDP(c net.Conn, m []byte) (err error) {
+	_, err = c.Write(m)
+	return err
+}
+
+func readMsgFromUDP(c net.Conn, maxSize int) (m []byte, err error) {
+	buf := bufpool.AcquireMsgBuf(maxSize)
+
+	n, err := c.Read(buf)
+	if err != nil {
+		bufpool.ReleaseMsgBuf(buf)
+		return nil, err
+	}
+	if n < 12 {
+		bufpool.ReleaseMsgBuf(buf)
+		return nil, dns.ErrShortRead
+	}
+	return buf[:n], err
+}

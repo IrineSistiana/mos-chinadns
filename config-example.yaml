@@ -3,6 +3,9 @@ bind:
   addr: "127.0.0.1:53" 
   protocol: "all" # 监听协议，`tcp`|`udp`|`all`。留空默认`all`
 
+dispatcher:
+  max_concurrent_queries: 150 # 最大并发查询数 默认150
+
 # 服务器
 server:
   # 用于解析大陆域名的本地服务器
@@ -117,7 +120,8 @@ ecs:
 # CA证书
 # 如果系统自带证书不可用。只有导入证书后TLS才能实现服务器身份验证，DoH才能工作
 # 出于安全考虑mos-chinadns不提供能绕过身份验证的选项
-# 证书需为PEM格式，支持ca-bundle
+# 证书需为PEM格式
+# 支持导入多个PEM块(俗称ca-bundle)
 # 默认留空，自带使用系统证书
 ca:
   path: "" # CA证书路径

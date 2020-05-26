@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -33,6 +34,8 @@ const (
 )
 
 func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error {
+	bk := newBucket(d.maxConcurrentQueries)
+
 	switch network {
 	case "tcp":
 		l, err := net.Listen("tcp", addr)
@@ -64,15 +67,20 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						return
 					}
 
-					q := new(dns.Msg)
-					err = q.Unpack(qRaw)
-					if err != nil {
+					if bk.aquire() == false { // too many concurrent queries
 						bufpool.ReleaseMsgBuf(qRaw)
-						return
+						continue // drop it
 					}
 
 					go func() {
 						defer bufpool.ReleaseMsgBuf(qRaw)
+						defer bk.release()
+
+						q := new(dns.Msg)
+						err = q.Unpack(qRaw)
+						if err != nil { // invalid msg
+							return
+						}
 
 						requestLogger := d.entry.WithFields(logrus.Fields{
 							"fromTCP":  c.RemoteAddr().String(),
@@ -101,7 +109,6 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 			return err
 		}
 
-		// only use one large buf to read
 		readBuf := bufpool.AcquireMsgBuf(maxUDPSize)
 		for {
 			n, from, err := l.ReadFrom(readBuf)
@@ -123,17 +130,22 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				continue
 			}
 
-			data := readBuf[:n]
-			q := new(dns.Msg)
-			err = q.Unpack(data)
-			if err != nil {
-				continue
+			if bk.aquire() == false { // too many concurrent queries
+				continue // drop it
 			}
 
 			// copy it to a new and maybe smaller buf for the new goroutine
-			qRaw := bufpool.AcquireMsgBufAndCopy(data)
+			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf[:n])
 			go func() {
 				defer bufpool.ReleaseMsgBuf(qRaw)
+				defer bk.release()
+
+				q := new(dns.Msg)
+				err = q.Unpack(qRaw)
+				if err != nil {
+					return
+				}
+
 				requestLogger := d.entry.WithFields(logrus.Fields{
 					"fromUDP":  from.String(),
 					"id":       q.Id,
@@ -155,4 +167,40 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 		}
 	}
 	return fmt.Errorf("unknown network: %s", network)
+}
+
+type bucket struct {
+	sync.Mutex
+	i   int
+	max int
+}
+
+func newBucket(max int) *bucket {
+	return &bucket{
+		i:   0,
+		max: max,
+	}
+}
+
+func (b *bucket) aquire() bool {
+	b.Lock()
+	defer b.Unlock()
+
+	if b.i >= b.max {
+		return false
+	}
+
+	b.i++
+	return true
+}
+
+func (b *bucket) release() {
+	b.Lock()
+	defer b.Unlock()
+
+	if b.i < 0 {
+		panic("nagetive num in bucket ")
+	}
+
+	b.i--
 }
