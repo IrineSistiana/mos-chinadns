@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -52,7 +53,8 @@ var (
 	cpu         = flag.Int("cpu", runtime.NumCPU(), "the maximum number of CPUs that can be executing simultaneously")
 	showVersion = flag.Bool("v", false, "show verison")
 
-	probeDoTTimeout = flag.String("probe-dot-timeout", "", "[ip:port] probe dot server's timeout")
+	probeDoTTimeout = flag.String("probe-dot-timeout", "", "[ip:port] probe dot server's idel timeout")
+	probeTCPTimeout = flag.String("probe-tcp-timeout", "", "[ip:port] probe tcp server's idel timeout")
 )
 
 func main() {
@@ -81,9 +83,13 @@ func main() {
 		return
 	}
 
-	// dot test
+	// idle timeout test
 	if len(*probeDoTTimeout) != 0 {
-		probTLSTimeout(*probeDoTTimeout, entry)
+		probTCPTimeout(*probeDoTTimeout, true, entry)
+		return
+	}
+	if len(*probeTCPTimeout) != 0 {
+		probTCPTimeout(*probeTCPTimeout, false, entry)
 		return
 	}
 
@@ -177,44 +183,57 @@ func printStatus(entry *logrus.Entry, d time.Duration) {
 	}
 }
 
-func probTLSTimeout(addr string, entry *logrus.Entry) {
+func probTCPTimeout(addr string, isTLS bool, entry *logrus.Entry) {
 	q := new(dns.Msg)
 	q.SetQuestion("www.google.com.", dns.TypeA)
 
-	tlsConfig := new(tls.Config)
-	tlsConfig.InsecureSkipVerify = true
+	var conn net.Conn
+	var err error
 
 	entry.Infof("connecting to %s", addr)
-	conn, err := tls.Dial("tcp", addr, tlsConfig)
-	if err != nil {
-		entry.Fatal(err)
+	if isTLS {
+		tlsConfig := new(tls.Config)
+		tlsConfig.InsecureSkipVerify = true
+		tlsConn, err := tls.Dial("tcp", addr, tlsConfig)
+		tlsConn.SetDeadline(time.Now().Add(time.Second * 5))
+		entry.Info("connected, start TLS handshaking")
+		err = tlsConn.Handshake()
+		if err != nil {
+			entry.Fatal(err)
+		}
+		entry.Info("TLS handshake completed")
+		conn = tlsConn
+	} else {
+		conn, err = net.Dial("tcp", addr)
+		if err != nil {
+			entry.Fatal(err)
+		}
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(time.Second * 5))
-	entry.Info("connected, handshaking")
-	conn.Handshake()
-	entry.Info("handshake completed")
-
+	entry.Info("sending request")
 	conn.SetDeadline(time.Now().Add(time.Second * 5))
 	dc := dns.Conn{Conn: conn}
 	err = dc.WriteMsg(q)
 	if err != nil {
 		entry.Fatal(err)
 	}
+	entry.Info("request sent, waiting for response")
 	_, err = dc.ReadMsg()
 	if err != nil {
 		entry.Fatal(err)
 	}
-
-	entry.Info("dummy msg sent")
-	entry.Info("waiting peer to close the connection...")
+	entry.Info("response received")
+	entry.Info("waiting for peer to close the connection...")
 	entry.Info("this may take a while...")
 	entry.Info("if you think its long enough, to cancel the test, press Ctrl + C")
 	conn.SetDeadline(time.Now().Add(time.Minute * 60))
 
 	start := time.Now()
-	conn.Read(make([]byte, 1))
+	_, err = conn.Read(make([]byte, 1))
+	if err == nil {
+		entry.Fatal("peer sent unexpect data")
+	}
 
 	entry.Infof("connection cloesed by peer after %s", time.Since(start))
 }
