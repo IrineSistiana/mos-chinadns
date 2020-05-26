@@ -74,7 +74,7 @@ def go_build():
         logger.info(f'building {zip_filename}')
         try:
             subprocess.check_call(
-                f'go build -ldflags "-s -w -X main.version={VERSION}" -o {bin_filename}', shell=True,
+                f'go build -ldflags "-s -w -X main.version={VERSION}" -trimpath -o {bin_filename}', shell=True,
                 env=os_env)
             try:
                 subprocess.check_call(f'upx -9 -q {bin_filename}', shell=True, stderr=subprocess.DEVNULL,
