@@ -112,6 +112,8 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 		client = &upstreamCommon{
 			addr:        sc.Addr,
 			dialNewConn: dialTLS,
+			readMsg:     readMsgFromTCP,
+			writeMsg:    writeMsgToTCP,
 			cp:          newConnPool(0xffff, timeout, timeout>>1),
 		}
 	case "doh":
