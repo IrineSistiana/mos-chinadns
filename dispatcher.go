@@ -444,7 +444,7 @@ func emptyResChan(c <-chan []byte) {
 
 func (d *dispatcher) queryUpstream(ctx context.Context, q *dns.Msg, qRaw []byte, u upstream, ecs *dns.EDNS0_SUBNET, requestLogger *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
 	if ecs != nil {
-		q, appended := appendECSIfNotExist(q, d.ecs.local)
+		q, appended := appendECSIfNotExist(q, ecs)
 		if appended {
 			buf := bufpool.AcquirePackBuf()
 			qRawCopy, err := q.PackBuffer(buf)
