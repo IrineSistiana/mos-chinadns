@@ -146,13 +146,23 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 		return nil, err
 	}
 
+	if len(qRaw) < 12 {
+		return nil, dns.ErrShortRead
+	}
+
 	queryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	var isNewConn bool
 	var c net.Conn
+	var msgIDForConn uint16
 	if !forceNewConn { // we want a new connection
-		c = u.cp.get()
+		c, msgIDForConn = u.cp.get()
+	}
+	if msgIDForConn == 0 {
+		msgIDForConn = dns.Id()
+	} else {
+		msgIDForConn++
 	}
 
 	// if we need a new conn
@@ -166,6 +176,11 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 	}
 	c.SetDeadline(time.Time{})
 
+	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
+	defer bufpool.ReleaseMsgBuf(qRawCopy)
+
+	originalID := utils.ExchangeMsgID(msgIDForConn, qRawCopy)
+
 	// this once is to make sure that the following
 	// c.SetDeadline wouldn't be called after exchange() is returned
 	once := sync.Once{}
@@ -178,7 +193,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 
 	// we might spend too much time on dialNewConn
 	// deadline might have been passed, write might get a err, but the conn is healty.
-	err = u.writeMsg(c, qRaw)
+	err = u.writeMsg(c, qRawCopy)
 	if err != nil {
 		goto ioErr
 	}
@@ -189,7 +204,7 @@ read:
 		goto ioErr
 	}
 
-	if utils.GetMsgID(rRaw) != utils.GetMsgID(qRaw) {
+	if utils.GetMsgID(rRaw) != msgIDForConn {
 		bufpool.ReleaseMsgBuf(rRaw)
 		if !isNewConn {
 			// this connection is reused, data might be the reply
@@ -204,14 +219,16 @@ read:
 	}
 
 	once.Do(func() {}) // do nothing, just fire the once
-	u.cp.put(c)
+	u.cp.put(c, msgIDForConn)
+
+	utils.SetMsgID(originalID, rRaw)
 	return rRaw, nil
 
 ioErr:
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() && queryCtx.Err() != nil {
 		// err caused by cancelled ctx, it's ok to reuse the connection
 		once.Do(func() {}) // do nothing, just fire the once
-		u.cp.put(c)
+		u.cp.put(c, msgIDForConn)
 		return nil, err
 	}
 	c.Close()
@@ -236,7 +253,8 @@ type connPool struct {
 
 type poolElem struct {
 	net.Conn
-	lastUsed time.Time
+	lastMsgID uint16
+	lastUsed  time.Time
 }
 
 func newConnPool(size int, ttl, gcInterval time.Duration) *connPool {
@@ -244,7 +262,7 @@ func newConnPool(size int, ttl, gcInterval time.Duration) *connPool {
 		maxSize:          size,
 		ttl:              ttl,
 		cleannerInterval: gcInterval,
-		pool:             make([]poolElem, 0, 64),
+		pool:             make([]poolElem, 0),
 	}
 
 }
@@ -295,7 +313,7 @@ func (p *connPool) runCleanner(force bool) {
 	}
 }
 
-func (p *connPool) put(c net.Conn) {
+func (p *connPool) put(c net.Conn, lastMsgID uint16) {
 	if c == nil {
 		return
 	}
@@ -313,16 +331,16 @@ func (p *connPool) put(c net.Conn) {
 	if len(p.pool) >= p.maxSize {
 		c.Close() // pool is full, drop it
 	} else {
-		p.pool = append(p.pool, poolElem{Conn: c, lastUsed: time.Now()})
+		p.pool = append(p.pool, poolElem{Conn: c, lastMsgID: lastMsgID, lastUsed: time.Now()})
 	}
 }
 
-func (p *connPool) get() (c net.Conn) {
+func (p *connPool) get() (c net.Conn, lastMsgID uint16) {
 	if p == nil {
-		return nil
+		return nil, 0
 	}
 	if p.maxSize <= 0 || p.ttl <= 0 {
-		return nil
+		return nil, 0
 	}
 
 	p.Lock()
@@ -340,9 +358,9 @@ func (p *connPool) get() (c net.Conn) {
 			// the last elem is expired, means all elems are expired
 			// remove them asap
 			p.runCleanner(true)
-			return nil
+			return nil, 0
 		}
-		return e.Conn
+		return e.Conn, e.lastMsgID
 	}
-	return nil
+	return nil, 0
 }

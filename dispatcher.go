@@ -293,7 +293,7 @@ func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.
 				case policyActionDeny:
 					doLocal = false
 				}
-				requestLogger.Debugf("serveDNS: localDomainPolicies: dl: %v, fl %v", doLocal, forceLocal)
+				requestLogger.Debugf("serveDNS: localDomainPolicies: dl: %v, fl: %v", doLocal, forceLocal)
 			}
 		}
 	}
