@@ -32,6 +32,10 @@ type Allocator struct {
 	buffers []sync.Pool
 }
 
+type MsgBuf struct {
+	B []byte
+}
+
 // NewAllocator initiates a []byte allocator for dns.Msg less than 65536 bytes,
 // the waste(memory fragmentation) of space allocation is guaranteed to be
 // no more than 50%.
@@ -41,52 +45,55 @@ func NewAllocator() *Allocator {
 	for k := range alloc.buffers {
 		i := k
 		alloc.buffers[k].New = func() interface{} {
-			return make([]byte, 1<<uint32(i))
+			return &MsgBuf{B: make([]byte, 1<<uint32(i))}
 		}
 	}
 	return alloc
 }
 
-func AcquireMsgBuf(size int) []byte {
-	return defaultAllocator.Get(size)
+func AcquireMsgBuf(size int) *MsgBuf {
+	return defaultAllocator.get(size)
 }
 
-func AcquireMsgBufAndCopy(src []byte) []byte {
+func AcquireMsgBufAndCopy(src []byte) *MsgBuf {
 	if src == nil {
 		return nil
 	}
 	dst := AcquireMsgBuf(len(src))
-	copy(dst, src)
+	copy(dst.B, src)
 	return dst
 }
 
-func ReleaseMsgBuf(buf []byte) {
-	defaultAllocator.Put(buf)
+func ReleaseMsgBuf(buf *MsgBuf) {
+	defaultAllocator.put(buf)
 }
 
-func MsgBufCanShrink(buf []byte) (ok bool) {
-	return cap(buf)>>1 >= len(buf)
+func MsgBufCanShrink(buf *MsgBuf) (ok bool) {
+	return cap(buf.B)>>1 >= len(buf.B)
 }
 
-// Get a []byte from pool with most appropriate cap
-func (alloc *Allocator) Get(size int) []byte {
+// get a *MsgBuf from pool with most appropriate cap
+func (alloc *Allocator) get(size int) *MsgBuf {
 	if size <= 0 || size > 65536 {
 		panic("unexpected size")
 	}
 
+	var buf *MsgBuf
 	bits := msb(size)
 	if size == 1<<bits {
-		return alloc.buffers[bits].Get().([]byte)[:size]
+		buf = alloc.buffers[bits].Get().(*MsgBuf)
 	} else {
-		return alloc.buffers[bits+1].Get().([]byte)[:size]
+		buf = alloc.buffers[bits+1].Get().(*MsgBuf)
 	}
+	buf.B = buf.B[:size]
+	return buf
 }
 
-// Put returns a []byte to pool for future use,
+// put returns a *MsgBuf to pool for future use,
 // which the cap must be exactly 2^n
-func (alloc *Allocator) Put(buf []byte) {
-	bits := msb(cap(buf))
-	if cap(buf) == 0 || cap(buf) > 65536 || cap(buf) != 1<<bits {
+func (alloc *Allocator) put(buf *MsgBuf) {
+	bits := msb(cap(buf.B))
+	if cap(buf.B) == 0 || cap(buf.B) > 65536 || cap(buf.B) != 1<<bits {
 		panic("unexpected cap size")
 	}
 	alloc.buffers[bits].Put(buf)

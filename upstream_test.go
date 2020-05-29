@@ -33,6 +33,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IrineSistiana/mos-chinadns/bufpool"
+
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -77,8 +79,9 @@ func Test_upstream(t *testing.T) {
 					logErr(err)
 					return
 				}
+				defer bufpool.ReleaseMsgBuf(rRaw)
 				r := new(dns.Msg)
-				err = r.Unpack(rRaw)
+				err = r.Unpack(rRaw.B)
 				if err != nil {
 					logErr(err)
 					return

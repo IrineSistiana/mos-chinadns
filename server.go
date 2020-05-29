@@ -77,7 +77,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						defer bk.release()
 
 						q := new(dns.Msg)
-						err = q.Unpack(qRaw)
+						err = q.Unpack(qRaw.B)
 						if err != nil { // invalid msg
 							return
 						}
@@ -88,13 +88,13 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 							"question": q.Question,
 						})
 
-						rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
-						if len(rRaw) == 0 {
+						rRaw := d.handleClientRawDNS(q, qRaw.B, requestLogger)
+						if rRaw == nil {
 							return // ignore it, result is empty
 						}
 						defer bufpool.ReleaseMsgBuf(rRaw)
 
-						err = writeMsgToTCP(c, rRaw)
+						err = writeMsgToTCP(c, rRaw.B)
 						if err != nil {
 							requestLogger.Warnf("ListenAndServe: writeMsgToTCP: %v", err)
 						}
@@ -111,7 +111,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 
 		readBuf := bufpool.AcquireMsgBuf(maxUDPSize)
 		for {
-			n, from, err := l.ReadFrom(readBuf)
+			n, from, err := l.ReadFrom(readBuf.B)
 
 			if err != nil {
 				er, ok := err.(net.Error)
@@ -135,13 +135,13 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 			}
 
 			// copy it to a new and maybe smaller buf for the new goroutine
-			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf[:n])
+			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf.B[:n])
 			go func() {
 				defer bufpool.ReleaseMsgBuf(qRaw)
 				defer bk.release()
 
 				q := new(dns.Msg)
-				err = q.Unpack(qRaw)
+				err = q.Unpack(qRaw.B)
 				if err != nil {
 					return
 				}
@@ -152,14 +152,14 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 					"question": q.Question,
 				})
 
-				rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
-				if len(rRaw) == 0 {
+				rRaw := d.handleClientRawDNS(q, qRaw.B, requestLogger)
+				if rRaw == nil {
 					return
 				}
 				defer bufpool.ReleaseMsgBuf(rRaw)
 
 				l.SetWriteDeadline(time.Now().Add(serverTimeout))
-				_, err = l.WriteTo(rRaw, from)
+				_, err = l.WriteTo(rRaw.B, from)
 				if err != nil {
 					requestLogger.Warnf("ListenAndServe: WriteTo: %v", err)
 				}

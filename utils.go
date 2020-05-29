@@ -28,21 +28,21 @@ import (
 
 // readMsgFromTCP reads msg from a tcp connection, m should be
 // released by bufpool.ReleaseMsgBuf when m is no longer used.
-func readMsgFromTCP(c net.Conn) (mRaw []byte, err error) {
+func readMsgFromTCP(c net.Conn) (mRaw *bufpool.MsgBuf, err error) {
 	lengthRaw := bufpool.AcquireMsgBuf(2)
 	defer bufpool.ReleaseMsgBuf(lengthRaw)
-	if _, err := io.ReadFull(c, lengthRaw); err != nil {
+	if _, err := io.ReadFull(c, lengthRaw.B); err != nil {
 		return nil, err
 	}
 
 	// dns headerSize
-	length := binary.BigEndian.Uint16(lengthRaw)
+	length := binary.BigEndian.Uint16(lengthRaw.B)
 	if length < 12 {
 		return nil, dns.ErrShortRead
 	}
 
 	buf := bufpool.AcquireMsgBuf(int(length))
-	if _, err := io.ReadFull(c, buf); err != nil {
+	if _, err := io.ReadFull(c, buf.B); err != nil {
 		bufpool.ReleaseMsgBuf(buf)
 		return nil, err
 	}
@@ -53,9 +53,9 @@ func readMsgFromTCP(c net.Conn) (mRaw []byte, err error) {
 func writeMsgToTCP(c net.Conn, m []byte) (err error) {
 	l := bufpool.AcquireMsgBuf(2)
 	defer bufpool.ReleaseMsgBuf(l)
-	binary.BigEndian.PutUint16(l, uint16(len(m)))
+	binary.BigEndian.PutUint16(l.B, uint16(len(m)))
 
-	_, err = (&net.Buffers{l, m}).WriteTo(c)
+	_, err = (&net.Buffers{l.B, m}).WriteTo(c)
 	return err
 }
 
@@ -64,10 +64,10 @@ func writeMsgToUDP(c net.Conn, m []byte) (err error) {
 	return err
 }
 
-func readMsgFromUDP(c net.Conn, maxSize int) (m []byte, err error) {
+func readMsgFromUDP(c net.Conn, maxSize int) (m *bufpool.MsgBuf, err error) {
 	buf := bufpool.AcquireMsgBuf(maxSize)
 
-	n, err := c.Read(buf)
+	n, err := c.Read(buf.B)
 	if err != nil {
 		bufpool.ReleaseMsgBuf(buf)
 		return nil, err
@@ -76,5 +76,6 @@ func readMsgFromUDP(c net.Conn, maxSize int) (m []byte, err error) {
 		bufpool.ReleaseMsgBuf(buf)
 		return nil, dns.ErrShortRead
 	}
-	return buf[:n], err
+	buf.B = buf.B[:n]
+	return buf, err
 }

@@ -47,7 +47,7 @@ const (
 )
 
 type upstream interface {
-	Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw []byte, rtt time.Duration, err error)
+	Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, rtt time.Duration, err error)
 }
 
 // upstreamCommon represents a tcp/tls server
@@ -55,7 +55,7 @@ type upstreamCommon struct {
 	addr        string
 	dialNewConn func() (net.Conn, error)
 	writeMsg    func(c net.Conn, msg []byte) error
-	readMsg     func(c net.Conn) (msg []byte, err error)
+	readMsg     func(c net.Conn) (msg *bufpool.MsgBuf, err error)
 
 	cp *connPool
 }
@@ -72,7 +72,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 		dialUDP := func() (net.Conn, error) {
 			return net.DialTimeout("udp", sc.Addr, dialUDPTimeout)
 		}
-		readUDPMsg := func(c net.Conn) (msg []byte, err error) {
+		readUDPMsg := func(c net.Conn) (msg *bufpool.MsgBuf, err error) {
 			return readMsgFromUDP(c, maxUDPSize)
 		}
 		client = &upstreamCommon{
@@ -150,13 +150,13 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 	return client, nil
 }
 
-func (u *upstreamCommon) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
+func (u *upstreamCommon) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, rtt time.Duration, err error) {
 	t := time.Now()
 	rRaw, err = u.exchange(ctx, qRaw, entry, false)
 	return rRaw, time.Since(t), err
 }
 
-func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry, forceNewConn bool) (rRaw []byte, err error) {
+func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry, forceNewConn bool) (rRaw *bufpool.MsgBuf, err error) {
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -196,7 +196,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
 	defer bufpool.ReleaseMsgBuf(qRawCopy)
 
-	originalID := utils.ExchangeMsgID(msgIDForConn, qRawCopy)
+	originalID := utils.ExchangeMsgID(msgIDForConn, qRawCopy.B)
 
 	queryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -211,7 +211,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 	}()
 
 	c.SetDeadline(time.Time{})
-	err = u.writeMsg(c, qRawCopy)
+	err = u.writeMsg(c, qRawCopy.B)
 	if err != nil {
 		goto ioErr
 	}
@@ -222,7 +222,7 @@ read:
 		goto ioErr
 	}
 
-	if utils.GetMsgID(rRaw) != msgIDForConn {
+	if utils.GetMsgID(rRaw.B) != msgIDForConn {
 		bufpool.ReleaseMsgBuf(rRaw)
 		if !isNewConn {
 			// this connection is reused, data might be the reply
@@ -239,7 +239,7 @@ read:
 	once.Do(func() {}) // do nothing, just fire the once
 	u.cp.put(c, msgIDForConn)
 
-	utils.SetMsgID(originalID, rRaw)
+	utils.SetMsgID(originalID, rRaw.B)
 	return rRaw, nil
 
 ioErr:
@@ -470,59 +470,59 @@ var (
 	dohCommomHeader          = http.Header{"Accept": []string{"application/dns-message"}}
 )
 
-func (u *upstreamDoH) Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
+func (u *upstreamDoH) Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, rtt time.Duration, err error) {
 	t := time.Now()
 	r, err := u.exchange(ctx, qRaw, requestLogger)
 	return r, time.Since(t), err
 }
 
-func (u *upstreamDoH) exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw []byte, err error) {
+func (u *upstreamDoH) exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
 	if len(qRaw) < 12 {
 		return nil, dns.ErrShortRead // avoid panic when access msg id in m[0] and m[1]
 	}
 
 	qRawCopy := bufpool.AcquireMsgBuf(len(qRaw))
 	defer bufpool.ReleaseMsgBuf(qRawCopy)
-	copy(qRawCopy, qRaw)
+	copy(qRawCopy.B, qRaw)
 
 	// In order to maximize HTTP cache friendliness, DoH clients using media
 	// formats that include the ID field from the DNS message header, such
 	// as "application/dns-message", SHOULD use a DNS ID of 0 in every DNS
 	// request.
 	// https://tools.ietf.org/html/rfc8484 4.1
-	oldID := utils.ExchangeMsgID(0, qRawCopy)
+	oldID := utils.ExchangeMsgID(0, qRawCopy.B)
 
 	// Padding characters for base64url MUST NOT be included.
 	// See: https://tools.ietf.org/html/rfc8484 6
 	// That's why we use base64.RawURLEncoding
-	urlLen := len(u.preparedURL) + base64.RawURLEncoding.EncodedLen(len(qRawCopy))
+	urlLen := len(u.preparedURL) + base64.RawURLEncoding.EncodedLen(len(qRawCopy.B))
 	urlBytes := bufpool.AcquireMsgBuf(urlLen)
-	copy(urlBytes, u.preparedURL)
+	copy(urlBytes.B, u.preparedURL)
 	base64MsgStart := len(u.preparedURL)
-	base64.RawURLEncoding.Encode(urlBytes[base64MsgStart:], qRawCopy)
+	base64.RawURLEncoding.Encode(urlBytes.B[base64MsgStart:], qRawCopy.B)
 
 	if u.useFastHTTP {
-		rRaw, err = u.doFasthttp(urlBytes, requestLogger)
+		rRaw, err = u.doFasthttp(urlBytes.B, requestLogger)
 		if err != nil {
 			return nil, fmt.Errorf("doFasthttp: %w", err)
 		}
 	} else {
-		rRaw, err = u.doHTTP(ctx, string(urlBytes), requestLogger)
+		rRaw, err = u.doHTTP(ctx, string(urlBytes.B), requestLogger)
 		if err != nil {
 			return nil, fmt.Errorf("doHTTP: %w", err)
 		}
 	}
 
 	// change the id back
-	if utils.GetMsgID(rRaw) != 0 { // check msg id
+	if utils.GetMsgID(rRaw.B) != 0 { // check msg id
 		bufpool.ReleaseMsgBuf(rRaw)
 		return nil, dns.ErrId
 	}
-	utils.SetMsgID(oldID, rRaw)
+	utils.SetMsgID(oldID, rRaw.B)
 	return rRaw, nil
 }
 
-func (c *upstreamDoH) doFasthttp(url []byte, requestLogger *logrus.Entry) ([]byte, error) {
+func (c *upstreamDoH) doFasthttp(url []byte, requestLogger *logrus.Entry) (*bufpool.MsgBuf, error) {
 	//Note: It is forbidden copying Request instances. Create new instances and use CopyTo instead.
 	//Request instance MUST NOT be used from concurrently running goroutines.
 	req := fasthttp.AcquireRequest()
@@ -557,7 +557,7 @@ func (c *upstreamDoH) doFasthttp(url []byte, requestLogger *logrus.Entry) ([]byt
 	return rRaw, nil
 }
 
-func (c *upstreamDoH) doHTTP(ctx context.Context, url string, requestLogger *logrus.Entry) ([]byte, error) {
+func (c *upstreamDoH) doHTTP(ctx context.Context, url string, requestLogger *logrus.Entry) (*bufpool.MsgBuf, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

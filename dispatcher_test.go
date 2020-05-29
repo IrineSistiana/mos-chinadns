@@ -38,10 +38,10 @@ import (
 	"github.com/miekg/dns"
 )
 
-func Test_dispatcher_A_AAAA(t *testing.T) {
+func Test_dispatcher(t *testing.T) {
 	logrus.SetLevel(logrus.WarnLevel)
 
-	test := func(testID, domain string, ll, rl int, lIP, rIP net.IP, want uint8, ipPo *ipPolicies, doPo *domainPolicies) {
+	testDispatcher := func(testID, domain string, ll, rl int, lIP, rIP net.IP, want uint8, ipPo *ipPolicies, doPo *domainPolicies) {
 		d, err := initTestDispatherAndServer(time.Duration(ll)*time.Millisecond, time.Duration(rl)*time.Millisecond, lIP, rIP, ipPo, doPo)
 		if err != nil {
 			t.Fatalf("[%s] init dispatcher, %v", testID, err)
@@ -69,29 +69,29 @@ func Test_dispatcher_A_AAAA(t *testing.T) {
 	// FastServer
 
 	//应该接受local的回复
-	test("fs1", "test.com", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, nil)
+	testDispatcher("fs1", "test.com", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, nil)
 
 	//应该接受remote的回复
-	test("fs2", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, nil)
+	testDispatcher("fs2", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, nil)
 
 	// ip policies
 
 	//即使local延时更低，但结果被过滤，应该接受remote的回复
-	test("ip1", "test.com", 0, 500, ip("192.168.1.1"), ip("0.0.0.2"), wantRemote, genTestIPPolicies("192.168.0.0/24", ""), nil)
-	test("ip2", "test.com", 0, 500, ip("192.168.1.1"), ip("0.0.0.2"), wantRemote, genTestIPPolicies("192.168.0.0/16", "192.168.1.0/24"), nil)
+	testDispatcher("ip1", "test.com", 0, 500, ip("192.168.1.1"), ip("0.0.0.2"), wantRemote, genTestIPPolicies("192.168.0.0/24", ""), nil)
+	testDispatcher("ip2", "test.com", 0, 500, ip("192.168.1.1"), ip("0.0.0.2"), wantRemote, genTestIPPolicies("192.168.0.0/16", "192.168.1.0/24"), nil)
 	//允许的IP, 接受
-	test("ip3", "test.com", 0, 500, ip("192.168.0.1"), ip("0.0.0.2"), wantLocal, genTestIPPolicies("192.168.0.0/24", "192.168.1.0/24"), nil)
+	testDispatcher("ip3", "test.com", 0, 500, ip("192.168.0.1"), ip("0.0.0.2"), wantLocal, genTestIPPolicies("192.168.0.0/24", "192.168.1.0/24"), nil)
 
 	// domain policies
 
 	//forced local
-	test("dp1", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, genTestDomainPolicies("com", "", ""))
-	test("dp2", "test.cn", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("com", "", ""))
+	testDispatcher("dp1", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, genTestDomainPolicies("com", "", ""))
+	testDispatcher("dp2", "test.cn", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("com", "", ""))
 
-	test("dp3", "test.com", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, genTestDomainPolicies("", "com", ""))
-	test("dp4", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("", "com", ""))
+	testDispatcher("dp3", "test.com", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, genTestDomainPolicies("", "com", ""))
+	testDispatcher("dp4", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("", "com", ""))
 
-	test("dp5", "test.cn", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("", "com", "cn"))
+	testDispatcher("dp5", "test.cn", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("", "com", "cn"))
 
 }
 
@@ -185,12 +185,12 @@ type fakeUpstream struct {
 	ip      net.IP
 }
 
-func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
+func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, rtt time.Duration, err error) {
 	t := time.Now()
 	rRaw, err = u.exchange(ctx, qRaw, entry)
 	return rRaw, time.Since(t), err
 }
-func (u *fakeUpstream) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw []byte, err error) {
+func (u *fakeUpstream) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
 
 	q := new(dns.Msg)
 	err = q.Unpack(qRaw)
@@ -211,13 +211,13 @@ func (u *fakeUpstream) exchange(ctx context.Context, qRaw []byte, entry *logrus.
 
 	rr = &dns.A{Hdr: hdr, A: u.ip}
 	r.Answer = append(r.Answer, rr)
-	rRaw, err = r.Pack()
+	rRawBytes, err := r.Pack()
 	time.Sleep(u.latency)
 	if err != nil {
 		return nil, err
 	}
 
-	return bufpool.AcquireMsgBufAndCopy(rRaw), err
+	return bufpool.AcquireMsgBufAndCopy(rRawBytes), err
 }
 
 func initTestDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) (*dispatcher, error) {
