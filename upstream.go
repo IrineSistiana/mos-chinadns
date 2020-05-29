@@ -92,6 +92,9 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 			ServerName:         sc.DoT.ServerName,
 			RootCAs:            rootCAs,
 			ClientSessionCache: tls.NewLRUClientSessionCache(64),
+
+			// for test only
+			InsecureSkipVerify: sc.insecureSkipVerify,
 		}
 
 		timeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
@@ -121,6 +124,9 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 			// don't have to set servername here, fasthttp will do it itself.
 			RootCAs:            rootCAs,
 			ClientSessionCache: tls.NewLRUClientSessionCache(64),
+
+			// for test only
+			InsecureSkipVerify: sc.insecureSkipVerify,
 		}
 
 		if len(sc.DoH.URL) == 0 {

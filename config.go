@@ -75,6 +75,9 @@ type BasicServerConfig struct {
 		ServerName  string `yaml:"server_name"`
 		IdleTimeout uint   `yaml:"idle_timeout"`
 	} `yaml:"dot"`
+
+	// for test only
+	insecureSkipVerify bool
 }
 
 func loadConfig(configFile string) (*Config, error) {

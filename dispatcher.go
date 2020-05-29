@@ -332,7 +332,7 @@ func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.
 				return
 			}
 
-			if !forceLocal && !d.acceptLocalRes(rRaw, requestLogger) {
+			if !forceLocal && !d.acceptRawLocalRes(rRaw, requestLogger) {
 				requestLogger.Debugf("serveDNS: local result denied, rtt: %dms", rtt.Milliseconds())
 				bufpool.ReleaseMsgBuf(rRaw)
 				close(localServerFailed)
@@ -498,17 +498,7 @@ func appendECSIfNotExist(q *dns.Msg, ecs *dns.EDNS0_SUBNET) (m *dns.Msg, appende
 
 	return q, false
 }
-
-// check if local result is ok to accept, res can be nil.
-func (d *dispatcher) acceptLocalRes(rRaw []byte, requestLogger *logrus.Entry) (ok bool) {
-
-	res := new(dns.Msg)
-	err := res.Unpack(rRaw)
-	if err != nil {
-		requestLogger.Debugf("acceptLocalRes: false, Unpack: %v", err)
-		return false
-	}
-
+func (d *dispatcher) acceptLocalRes(res *dns.Msg, requestLogger *logrus.Entry) (ok bool) {
 	if res == nil {
 		requestLogger.Debug("acceptLocalRes: false: result is nil")
 		return false
@@ -591,6 +581,18 @@ func (d *dispatcher) acceptLocalRes(rRaw []byte, requestLogger *logrus.Entry) (o
 
 	requestLogger.Debug("acceptLocalRes: true: default accpet")
 	return true
+}
+
+// check if local result is ok to accept, res can be nil.
+func (d *dispatcher) acceptRawLocalRes(rRaw []byte, requestLogger *logrus.Entry) (ok bool) {
+	res := new(dns.Msg)
+	err := res.Unpack(rRaw)
+	if err != nil {
+		requestLogger.Debugf("acceptRawLocalRes: false, Unpack: %v", err)
+		return false
+	}
+
+	return d.acceptLocalRes(res, requestLogger)
 }
 
 func caPath2Pool(ca string) (*x509.CertPool, error) {
