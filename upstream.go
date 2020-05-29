@@ -158,19 +158,11 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 		return nil, dns.ErrShortRead
 	}
 
-	queryCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	var isNewConn bool
 	var c net.Conn
 	var msgIDForConn uint16
 	if !forceNewConn { // we want a new connection
 		c, msgIDForConn = u.cp.get()
-	}
-	if msgIDForConn == 0 {
-		msgIDForConn = dns.Id()
-	} else {
-		msgIDForConn++
 	}
 
 	// if we need a new conn
@@ -179,18 +171,30 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 		if err != nil {
 			return nil, err
 		}
+
+		// dialNewConn might take some time, check if ctx is done
+		// and return before doing some io stuff.
+		if err = ctx.Err(); err != nil {
+			u.cp.put(c, msgIDForConn)
+			return nil, err
+		}
+
 		c = newConn
 		isNewConn = true
+		msgIDForConn = dns.Id()
+	} else {
+		msgIDForConn++
 	}
-	c.SetDeadline(time.Time{})
 
 	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
 	defer bufpool.ReleaseMsgBuf(qRawCopy)
 
 	originalID := utils.ExchangeMsgID(msgIDForConn, qRawCopy)
 
+	queryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// this once is to make sure that the following
-	// c.SetDeadline wouldn't be called after exchange() is returned
+	// c.SetDeadline wouldn't be called after c is put into connPool
 	once := sync.Once{}
 	go func() {
 		select {
@@ -199,8 +203,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 		}
 	}()
 
-	// we might spend too much time on dialNewConn
-	// deadline might have been passed, write might get a err, but the conn is healty.
+	c.SetDeadline(time.Time{})
 	err = u.writeMsg(c, qRawCopy)
 	if err != nil {
 		goto ioErr
