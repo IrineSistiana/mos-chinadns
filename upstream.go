@@ -77,6 +77,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 			cp:          newConnPool(0xffff, time.Second*10, time.Second*5),
 		}
 	case "tcp":
+		idleTimeout := time.Duration(sc.TCP.IdleTimeout) * time.Second
 		dialTCP := func() (net.Conn, error) {
 			return net.DialTimeout("tcp", sc.Addr, dialTCPTimeout)
 		}
@@ -85,7 +86,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 			dialNewConn: dialTCP,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
-			cp:          newConnPool(0xffff, time.Second*10, time.Second*5),
+			cp:          newConnPool(0xffff, idleTimeout, idleTimeout>>1),
 		}
 	case "dot":
 		tlsConf := &tls.Config{
@@ -97,7 +98,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 			InsecureSkipVerify: sc.insecureSkipVerify,
 		}
 
-		timeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
+		idleTimeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
 		dialTLS := func() (net.Conn, error) {
 			c, err := net.DialTimeout("tcp", sc.Addr, dialTCPTimeout)
 			if err != nil {
@@ -117,7 +118,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 			dialNewConn: dialTLS,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
-			cp:          newConnPool(0xffff, timeout, timeout>>1),
+			cp:          newConnPool(0xffff, idleTimeout, idleTimeout>>1),
 		}
 	case "doh":
 		tlsConf := &tls.Config{

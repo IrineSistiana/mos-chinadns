@@ -66,15 +66,20 @@ type Config struct {
 type BasicServerConfig struct {
 	Addr     string `yaml:"addr"`
 	Protocol string `yaml:"protocol"`
-	DoH      struct {
-		URL      string `yaml:"url"`
-		FastHTTP bool   `yaml:"fasthttp"`
-	} `yaml:"doh"`
+
+	TCP struct {
+		IdleTimeout uint `yaml:"idle_timeout"`
+	} `yaml:"tcp"`
 
 	DoT struct {
 		ServerName  string `yaml:"server_name"`
 		IdleTimeout uint   `yaml:"idle_timeout"`
 	} `yaml:"dot"`
+
+	DoH struct {
+		URL      string `yaml:"url"`
+		FastHTTP bool   `yaml:"fasthttp"`
+	} `yaml:"doh"`
 
 	// for test only
 	insecureSkipVerify bool

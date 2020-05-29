@@ -127,6 +127,7 @@ func Test_upstream(t *testing.T) {
 			Addr:     addr,
 			Protocol: "tcp",
 		}
+		sc.TCP.IdleTimeout = 8
 		upstreamTCP, err := newUpstream(sc, nil)
 		if err != nil {
 			t.Fatal(err)
