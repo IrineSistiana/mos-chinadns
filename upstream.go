@@ -21,15 +21,21 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/IrineSistiana/mos-chinadns/utils"
+	"github.com/valyala/fasthttp"
+	"golang.org/x/net/http2"
 
 	"github.com/IrineSistiana/mos-chinadns/bufpool"
-	"github.com/IrineSistiana/mos-chinadns/dohclient"
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -133,7 +139,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 		if len(sc.DoH.URL) == 0 {
 			return nil, fmt.Errorf("protocol [%s] needs URL", sc.Protocol)
 		}
-		client, err = dohclient.NewClient(sc.DoH.URL, sc.Addr, tlsConf, dns.MaxMsgSize, sc.DoH.FastHTTP)
+		client, err = newDoHUpstream(sc.DoH.URL, sc.Addr, tlsConf, sc.DoH.FastHTTP)
 		if err != nil {
 			return nil, err
 		}
@@ -220,7 +226,7 @@ read:
 		bufpool.ReleaseMsgBuf(rRaw)
 		if !isNewConn {
 			// this connection is reused, data might be the reply
-			// of last qRaw, not this qRaw.
+			// of a previous qRaw, not this qRaw.
 			// try to read again
 			goto read
 		} else {
@@ -375,4 +381,219 @@ func (p *connPool) get() (c net.Conn, lastMsgID uint16) {
 		return e.Conn, e.lastMsgID
 	}
 	return nil, 0
+}
+
+const (
+	fastHTTPIOTimeout = time.Second * 3
+)
+
+type upstreamDoH struct {
+	useFastHTTP bool
+	preparedURL []byte
+
+	fasthttpClient *fasthttp.HostClient
+	netHTTPClient  *http.Client
+}
+
+func newDoHUpstream(urlStr, addr string, tlsConfig *tls.Config, fastHTTP bool) (*upstreamDoH, error) {
+	// check urlStr
+	u, err := url.ParseRequestURI(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("url.ParseRequestURI: %w", err)
+	}
+
+	if u.Scheme != "https" {
+		return nil, fmt.Errorf("invalid url scheme [%s]", u.Scheme)
+	}
+
+	u.ForceQuery = true // make sure we have a '?' at somewhere
+	urlStr = u.String()
+	if strings.HasSuffix(urlStr, "?") {
+		urlStr = urlStr + "dns=" // the only one and the first arg
+	} else {
+		urlStr = urlStr + "&dns=" // the last arg
+	}
+
+	c := new(upstreamDoH)
+	c.preparedURL = []byte(urlStr)
+	c.useFastHTTP = fastHTTP
+
+	if fastHTTP {
+		c.fasthttpClient = &fasthttp.HostClient{
+			Addr: u.Hostname(),
+			Dial: func(_ string) (net.Conn, error) {
+				d := net.Dialer{Timeout: fastHTTPIOTimeout}
+				return d.Dial("tcp", addr)
+			},
+			IsTLS:                         true,
+			TLSConfig:                     tlsConfig,
+			ReadTimeout:                   fastHTTPIOTimeout,
+			WriteTimeout:                  fastHTTPIOTimeout,
+			MaxResponseBodySize:           dns.MaxMsgSize,
+			DisableHeaderNamesNormalizing: true,
+			DisablePathNormalizing:        true,
+			NoDefaultUserAgentHeader:      true,
+		}
+	} else {
+		tc := new(tls.Config)
+		if tlsConfig != nil {
+			tc = tlsConfig.Clone()
+		}
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				d := net.Dialer{}
+				return d.DialContext(ctx, network, addr)
+			},
+			TLSClientConfig: tc,
+
+			IdleConnTimeout:       time.Minute,
+			ResponseHeaderTimeout: time.Second * 5,
+			ForceAttemptHTTP2:     true,
+		}
+
+		err := http2.ConfigureTransport(transport) // enable http2
+		if err != nil {
+			return nil, err
+		}
+		c.netHTTPClient = &http.Client{
+			Transport: transport,
+		}
+	}
+
+	return c, nil
+}
+
+// some consistent string vars for DoH client
+var (
+	headerCanonicalKeyAccept = []byte("Accept")
+	headerValueMediaType     = []byte("application/dns-message")
+	dohCommomHeader          = http.Header{"Accept": []string{"application/dns-message"}}
+)
+
+func (u *upstreamDoH) Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
+	t := time.Now()
+	r, err := u.exchange(ctx, qRaw, requestLogger)
+	return r, time.Since(t), err
+}
+
+func (u *upstreamDoH) exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw []byte, err error) {
+	if len(qRaw) < 12 {
+		return nil, dns.ErrShortRead // avoid panic when access msg id in m[0] and m[1]
+	}
+
+	qRawCopy := bufpool.AcquireMsgBuf(len(qRaw))
+	defer bufpool.ReleaseMsgBuf(qRawCopy)
+	copy(qRawCopy, qRaw)
+
+	// In order to maximize HTTP cache friendliness, DoH clients using media
+	// formats that include the ID field from the DNS message header, such
+	// as "application/dns-message", SHOULD use a DNS ID of 0 in every DNS
+	// request.
+	// https://tools.ietf.org/html/rfc8484 4.1
+	oldID := utils.ExchangeMsgID(0, qRawCopy)
+
+	// Padding characters for base64url MUST NOT be included.
+	// See: https://tools.ietf.org/html/rfc8484 6
+	// That's why we use base64.RawURLEncoding
+	urlLen := len(u.preparedURL) + base64.RawURLEncoding.EncodedLen(len(qRawCopy))
+	urlBytes := bufpool.AcquireMsgBuf(urlLen)
+	copy(urlBytes, u.preparedURL)
+	base64MsgStart := len(u.preparedURL)
+	base64.RawURLEncoding.Encode(urlBytes[base64MsgStart:], qRawCopy)
+
+	if u.useFastHTTP {
+		rRaw, err = u.doFasthttp(urlBytes, requestLogger)
+		if err != nil {
+			return nil, fmt.Errorf("doFasthttp: %w", err)
+		}
+	} else {
+		rRaw, err = u.doHTTP(ctx, string(urlBytes), requestLogger)
+		if err != nil {
+			return nil, fmt.Errorf("doHTTP: %w", err)
+		}
+	}
+
+	// change the id back
+	if utils.GetMsgID(rRaw) != 0 { // check msg id
+		bufpool.ReleaseMsgBuf(rRaw)
+		return nil, dns.ErrId
+	}
+	utils.SetMsgID(oldID, rRaw)
+	return rRaw, nil
+}
+
+func (c *upstreamDoH) doFasthttp(url []byte, requestLogger *logrus.Entry) ([]byte, error) {
+	//Note: It is forbidden copying Request instances. Create new instances and use CopyTo instead.
+	//Request instance MUST NOT be used from concurrently running goroutines.
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	req.SetRequestURIBytes(url)
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.Header.SetCanonical(headerCanonicalKeyAccept, headerValueMediaType)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	if err := c.fasthttpClient.Do(req, resp); err != nil {
+		return nil, fmt.Errorf("Do: %w", err)
+	}
+
+	// check Content_Length
+	if resp.Header.ContentLength() > dns.MaxMsgSize {
+		return nil, fmt.Errorf("ContentLength is too big [%d]", resp.Header.ContentLength())
+	}
+
+	// check statu code
+	statusCode := resp.StatusCode()
+	if statusCode != fasthttp.StatusOK {
+		return nil, fmt.Errorf("HTTP status codes [%d]", statusCode)
+	}
+
+	body := resp.Body()
+	if len(body) < 12 {
+		return nil, dns.ErrShortRead
+	}
+
+	rRaw := bufpool.AcquireMsgBufAndCopy(body)
+	return rRaw, nil
+}
+
+func (c *upstreamDoH) doHTTP(ctx context.Context, url string, requestLogger *logrus.Entry) ([]byte, error) {
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("NewRequestWithContext: %w", err)
+	}
+	req.Header = dohCommomHeader.Clone()
+
+	resp, err := c.netHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// check Content-Length
+	if resp.ContentLength > dns.MaxMsgSize {
+		return nil, fmt.Errorf("ContentLength is too big [%d]", resp.ContentLength)
+	}
+
+	// check statu code
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP status codes [%d]", resp.StatusCode)
+	}
+
+	buf := bufpool.AcquireBytesBuf()
+	defer bufpool.ReleaseBytesBuf(buf)
+	_, err = buf.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize))
+
+	if err != nil {
+		return nil, fmt.Errorf("Response body is too large: %w", err)
+	}
+	body := buf.Bytes()
+
+	if len(body) < 12 {
+		return nil, dns.ErrShortRead
+	}
+
+	rRaw := bufpool.AcquireMsgBufAndCopy(body)
+	return rRaw, nil
 }

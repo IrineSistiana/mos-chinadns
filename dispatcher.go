@@ -43,8 +43,8 @@ const (
 )
 
 var (
-	errAllServersFailed  = errors.New("all servers are failed")
-	errAllServersTimeout = errors.New("all server timeout")
+	errServerFailed  = errors.New("server failed")
+	errServerTimeout = errors.New("server timeout")
 )
 
 type dispatcher struct {
@@ -240,24 +240,51 @@ func isUnusualType(q *dns.Msg) bool {
 	return q.Opcode != dns.OpcodeQuery || len(q.Question) != 1 || q.Question[0].Qclass != dns.ClassINET || (q.Question[0].Qtype != dns.TypeA && q.Question[0].Qtype != dns.TypeAAAA)
 }
 
-func (d *dispatcher) serveDNS(q *dns.Msg, entry *logrus.Entry) (r *dns.Msg) {
-	rRaw := d.serveRawDNS(q, nil, entry)
-	if rRaw == nil {
-		return nil
+// handleClientRawDNS returns the byte result. If all upstreams are failed, a dns reply with rcode = server failure
+// will be returned.
+func (d *dispatcher) handleClientRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.Entry) []byte {
+	rRaw, err := d.serveRawDNS(q, qRaw, requestLogger)
+
+	if err != nil {
+		requestLogger.Warnf("handleClientRawDNS: serveRawDNS: %v", err)
+		if err == errServerFailed {
+			// tell the client that server is failed
+			r := new(dns.Msg)
+			r.SetReply(q)
+			r.Rcode = dns.RcodeServerFailure
+			buf := bufpool.AcquirePackBuf()
+			rRawWithPackBuf, err := r.PackBuffer(buf)
+			if err != nil {
+				requestLogger.Warnf("serveDNS: pack ServerFailure reply failed: %v", err)
+				bufpool.ReleasePackBuf(buf)
+				return nil
+			}
+			rRaw := bufpool.AcquireMsgBufAndCopy(rRawWithPackBuf)
+			bufpool.ReleasePackBuf(rRawWithPackBuf)
+			return rRaw
+		}
+	}
+
+	return rRaw
+}
+
+func (d *dispatcher) serveDNS(q *dns.Msg, entry *logrus.Entry) (r *dns.Msg, err error) {
+	rRaw, err := d.serveRawDNS(q, nil, entry)
+	if err != nil {
+		return nil, err
 	}
 
 	r = new(dns.Msg)
-	err := r.Unpack(rRaw)
+	err = r.Unpack(rRaw)
 	bufpool.ReleaseMsgBuf(rRaw)
 	if err != nil {
-		entry.Warnf("serveDNS: Unpack: %v", err)
-		return nil
+		return nil, err
 	}
-	return r
+	return r, nil
 }
 
-// serveRawDNS: q can't be nil, result might be nil
-func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.Entry) []byte {
+// serveRawDNS: q and requestLogger can't be nil. The error will be errServerFailed or errServerTimeout.
+func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.Entry) ([]byte, error) {
 
 	// if qRaw is nil, we will pack the q
 	// and release its buffer after func returned
@@ -268,7 +295,7 @@ func (d *dispatcher) serveRawDNS(q *dns.Msg, qRaw []byte, requestLogger *logrus.
 		if err != nil {
 			requestLogger.Warnf("serveDNS: q.PackBuffer: %v", err)
 			bufpool.ReleasePackBuf(buf)
-			return nil
+			return nil, nil
 		}
 		defer bufpool.ReleasePackBuf(qRaw)
 	}
@@ -393,7 +420,7 @@ skipRemote:
 		upstreamWG.Wait()
 		// there has a very small probability that
 		// below select{} will select case:<-serverFailedNotify
-		// if both case1 and case2 are in ready state.
+		// if both case1 and case2 are ready.
 		// dont close serverFailedNotify if resChan is ready.
 
 		// upstreamWG is done, no one is writing to resChan right now.
@@ -402,43 +429,26 @@ skipRemote:
 		}
 
 		serveDNSWG.Wait()
-		emptyResChan(resChan) // some buf might still be traped in resChan
+		// some buf might still be traped in resChan
+		for {
+			select {
+			case rRaw := <-resChan:
+				if cap(rRaw) != 0 {
+					bufpool.ReleaseMsgBuf(rRaw)
+				}
+			default:
+				return
+			}
+		}
 	}()
 
 	select {
 	case rRaw := <-resChan:
-		return rRaw
+		return rRaw, nil
 	case <-serverFailedNotify:
-		requestLogger.Warn("serveDNS: query failed: all servers failed")
-		r := new(dns.Msg)
-		r.SetReply(q)
-		r.Rcode = dns.RcodeServerFailure
-		buf := bufpool.AcquirePackBuf()
-		rRawWithPackBuf, err := r.PackBuffer(buf)
-		if err != nil {
-			requestLogger.Warnf("serveDNS: r.PackBuffer: %v", err)
-			bufpool.ReleasePackBuf(buf)
-			return nil
-		}
-		rRaw := bufpool.AcquireMsgBufAndCopy(rRawWithPackBuf)
-		bufpool.ReleasePackBuf(rRawWithPackBuf)
-		return rRaw
+		return nil, errServerFailed
 	case <-timeoutTimer.C:
-		requestLogger.Warn("serveDNS: query failed: timeout")
-		return nil
-	}
-}
-
-func emptyResChan(c <-chan []byte) {
-	for {
-		select {
-		case rRaw := <-c:
-			if cap(rRaw) != 0 {
-				bufpool.ReleaseMsgBuf(rRaw)
-			}
-		default:
-			return
-		}
+		return nil, errServerTimeout
 	}
 }
 

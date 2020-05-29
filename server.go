@@ -88,7 +88,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 							"question": q.Question,
 						})
 
-						rRaw := d.serveRawDNS(q, qRaw, requestLogger)
+						rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
 						if len(rRaw) == 0 {
 							return // ignore it, result is empty
 						}
@@ -152,7 +152,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 					"question": q.Question,
 				})
 
-				rRaw := d.serveRawDNS(q, qRaw, requestLogger)
+				rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
 				if len(rRaw) == 0 {
 					return
 				}

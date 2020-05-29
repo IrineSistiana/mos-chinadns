@@ -19,12 +19,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/IrineSistiana/mos-chinadns/bufpool"
 
 	"github.com/IrineSistiana/mos-chinadns/domainlist"
 
@@ -35,15 +38,166 @@ import (
 	"github.com/miekg/dns"
 )
 
-type vServer struct {
+func Test_dispatcher_A_AAAA(t *testing.T) {
+	logrus.SetLevel(logrus.WarnLevel)
+
+	test := func(testID, domain string, ll, rl int, lIP, rIP net.IP, want uint8, ipPo *ipPolicies, doPo *domainPolicies) {
+		d, err := initTestDispatherAndServer(time.Duration(ll)*time.Millisecond, time.Duration(rl)*time.Millisecond, lIP, rIP, ipPo, doPo)
+		if err != nil {
+			t.Fatalf("[%s] init dispatcher, %v", testID, err)
+		}
+
+		q := new(dns.Msg)
+		q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
+		r, err := d.serveDNS(q, d.entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		a := r.Answer[0].(*dns.A)
+		var w net.IP
+		if want == wantLocal {
+			w = lIP
+		} else {
+			w = rIP
+		}
+		if !a.A.Equal(w) {
+			t.Fatalf("[%s] not the server we want, want: %s, got %s", testID, w, a.A)
+		}
+	}
+
+	// FastServer
+
+	//应该接受local的回复
+	test("fs1", "test.com", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, nil)
+
+	//应该接受remote的回复
+	test("fs2", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, nil)
+
+	// ip policies
+
+	//即使local延时更低，但结果被过滤，应该接受remote的回复
+	test("ip1", "test.com", 0, 500, ip("192.168.1.1"), ip("0.0.0.2"), wantRemote, genTestIPPolicies("192.168.0.0/24", ""), nil)
+	test("ip2", "test.com", 0, 500, ip("192.168.1.1"), ip("0.0.0.2"), wantRemote, genTestIPPolicies("192.168.0.0/16", "192.168.1.0/24"), nil)
+	//允许的IP, 接受
+	test("ip3", "test.com", 0, 500, ip("192.168.0.1"), ip("0.0.0.2"), wantLocal, genTestIPPolicies("192.168.0.0/24", "192.168.1.0/24"), nil)
+
+	// domain policies
+
+	//forced local
+	test("dp1", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, genTestDomainPolicies("com", "", ""))
+	test("dp2", "test.cn", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("com", "", ""))
+
+	test("dp3", "test.com", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, genTestDomainPolicies("", "com", ""))
+	test("dp4", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("", "com", ""))
+
+	test("dp5", "test.cn", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("", "com", "cn"))
+
+}
+
+const (
+	benchFlow uint8 = iota
+	benchConcurrent
+	benchConcurrentCPUThread
+)
+
+func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) {
+	d, err := initTestDispatherAndServer(time.Duration(ll)*time.Millisecond, time.Duration(rl)*time.Millisecond, lIP, rIP, ipPo, doPo)
+	if err != nil {
+		b.Fatalf("[%s] init dispatcher, %v", testID, err)
+	}
+
+	b.ResetTimer()
+	switch mode {
+	case benchFlow:
+		for i := 0; i < b.N; i++ {
+			_, err := d.serveDNS(new(dns.Msg).SetQuestion(dns.Fqdn(domain), dns.TypeA), d.entry)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	case benchConcurrent:
+		wg := sync.WaitGroup{}
+		var ec int32
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			for j := 0; j < 1000; j++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					q := new(dns.Msg)
+					q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
+					_, err := d.serveDNS(q, d.entry)
+					if err != nil {
+						atomic.AddInt32(&ec, 1)
+						// panic("err")
+					}
+				}()
+			}
+			wg.Wait()
+		}
+		if ec > 0 {
+			b.Fatal(fmt.Sprintf("err: %d\n", ec))
+		}
+	case benchConcurrentCPUThread:
+		var ec int32
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				q := new(dns.Msg)
+				q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
+				_, err := d.serveDNS(q, d.entry)
+				if err != nil {
+					atomic.AddInt32(&ec, 1)
+				}
+			}
+		})
+		if ec > 0 {
+			b.Fatal(fmt.Sprintf("err: %d\n", ec))
+		}
+	}
+}
+
+func Benchmark_dispatcher_flow(b *testing.B) {
+	logrus.SetLevel(logrus.WarnLevel)
+	b.ReportAllocs()
+
+	bench("dp", benchFlow, b, "test.com", 0, 0, ip("0.0.0.1"), ip("0.0.0.2"), nil, genTestDomainPolicies("", "com", "cn"))
+}
+
+func Benchmark_dispatcher_concurrent(b *testing.B) {
+	logrus.SetLevel(logrus.WarnLevel)
+	b.ReportAllocs()
+
+	bench("dp", benchConcurrent, b, "test.com", 0, 0, ip("0.0.0.1"), ip("0.0.0.2"), nil, genTestDomainPolicies("", "com", "cn"))
+}
+
+func Benchmark_dispatcher_concurrent_cpu_thread(b *testing.B) {
+	logrus.SetLevel(logrus.WarnLevel)
+	b.ReportAllocs()
+
+	bench("dp", benchConcurrentCPUThread, b, "test.com", 0, 0, ip("0.0.0.1"), ip("0.0.0.2"), nil, genTestDomainPolicies("", "com", "cn"))
+}
+
+///////////////////////////////////////////
+
+type fakeUpstream struct {
 	latency time.Duration
 	ip      net.IP
 }
 
-func (s *vServer) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
+func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw []byte, rtt time.Duration, err error) {
+	t := time.Now()
+	rRaw, err = u.exchange(ctx, qRaw, entry)
+	return rRaw, time.Since(t), err
+}
+func (u *fakeUpstream) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw []byte, err error) {
 
+	q := new(dns.Msg)
+	err = q.Unpack(qRaw)
+	if err != nil {
+		return nil, err
+	}
 	name := q.Question[0].Name
-
 	r := new(dns.Msg)
 	r.SetReply(q)
 	var rr dns.RR
@@ -53,55 +207,42 @@ func (s *vServer) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
 		Ttl:      300,
 		Rdlength: 0,
 	}
-
 	hdr.Rrtype = dns.TypeA
 
-	rr = &dns.A{Hdr: hdr, A: s.ip}
+	rr = &dns.A{Hdr: hdr, A: u.ip}
 	r.Answer = append(r.Answer, rr)
+	rRaw, err = r.Pack()
+	time.Sleep(u.latency)
+	if err != nil {
+		return nil, err
+	}
 
-	time.Sleep(s.latency)
-	w.WriteMsg(r)
+	return bufpool.AcquireMsgBufAndCopy(rRaw), err
 }
 
-func initTestDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) (*dispatcher, func(), error) {
+func initTestDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) (*dispatcher, error) {
 	c := Config{}
 
-	//local
-	localServerUDPConn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		return nil, nil, err
-	}
-	localServerUDPConn.(*net.UDPConn).SetReadBuffer(64 * 1024)
-	c.Server.Local.Addr = localServerUDPConn.LocalAddr().String()
-	ls := dns.Server{PacketConn: localServerUDPConn, Handler: &vServer{ip: lIP, latency: lLatency}}
-	go ls.ActivateAndServe()
-
-	//remote
-	remoteServerUDPConn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	remoteServerUDPConn.(*net.UDPConn).SetReadBuffer(64 * 1024)
-	if err != nil {
-		return nil, nil, err
-	}
-	c.Server.Remote.Addr = remoteServerUDPConn.LocalAddr().String()
-	rs := dns.Server{PacketConn: remoteServerUDPConn, Handler: &vServer{ip: rIP, latency: rLatency}}
-	go rs.ActivateAndServe()
+	// just set the vaule for initDispatcher() inner checks, we will hijeck the upstream later.
+	c.Server.Local.Addr = "127.0.0.1:0"
+	c.Server.Remote.Addr = "127.0.0.1:0"
+	c.Bind.Addr = "127.0.0.1:0"
 
 	c.ECS.Local = "1.2.3.0/24"
 	c.ECS.Remote = "4.3.2.0/24"
 
-	c.Bind.Addr = "127.0.0.1:0"
 	d, err := initDispatcher(&c, logrus.NewEntry(logrus.StandardLogger()))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	d.local.ipPolicies = ipPo
 	d.local.domainPolicies = doPo
 
-	return d, func() {
-		ls.Shutdown()
-		rs.Shutdown()
-	}, nil
+	d.local.client = &fakeUpstream{latency: lLatency, ip: lIP}
+	d.remote.client = &fakeUpstream{latency: rLatency, ip: rIP}
+
+	return d, nil
 }
 
 // deny -> accept -> deny all
@@ -157,145 +298,3 @@ const (
 	wantLocal uint8 = iota
 	wantRemote
 )
-
-func Test_dispatcher_A_AAAA(t *testing.T) {
-	logrus.SetLevel(logrus.WarnLevel)
-
-	test := func(testID, domain string, ll, rl int, lIP, rIP net.IP, want uint8, ipPo *ipPolicies, doPo *domainPolicies) {
-		d, closeServer, err := initTestDispatherAndServer(time.Duration(ll)*time.Millisecond, time.Duration(rl)*time.Millisecond, lIP, rIP, ipPo, doPo)
-		if err != nil {
-			t.Fatalf("[%s] init dispatcher, %v", testID, err)
-		}
-		defer closeServer()
-
-		q := new(dns.Msg)
-		q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-		r := d.serveDNS(q, d.entry)
-		if r == nil || r.Rcode != dns.RcodeSuccess {
-			t.Fatalf("[%s] invalid r", testID)
-		}
-
-		a := r.Answer[0].(*dns.A)
-		var w net.IP
-		if want == wantLocal {
-			w = lIP
-		} else {
-			w = rIP
-		}
-		if !a.A.Equal(w) {
-			t.Fatalf("[%s] not the server we want, want: %s, got %s", testID, w, a.A)
-		}
-	}
-
-	// FastServer
-
-	//应该接受local的回复
-	test("fs1", "test.com", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, nil)
-
-	//应该接受remote的回复
-	test("fs2", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, nil)
-
-	// ip policies
-
-	//即使local延时更低，但结果被过滤，应该接受remote的回复
-	test("ip1", "test.com", 0, 500, ip("192.168.1.1"), ip("0.0.0.2"), wantRemote, genTestIPPolicies("192.168.0.0/24", ""), nil)
-	test("ip2", "test.com", 0, 500, ip("192.168.1.1"), ip("0.0.0.2"), wantRemote, genTestIPPolicies("192.168.0.0/16", "192.168.1.0/24"), nil)
-	//允许的IP, 接受
-	test("ip3", "test.com", 0, 500, ip("192.168.0.1"), ip("0.0.0.2"), wantLocal, genTestIPPolicies("192.168.0.0/24", "192.168.1.0/24"), nil)
-
-	// domain policies
-
-	//forced local
-	test("dp1", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, genTestDomainPolicies("com", "", ""))
-	test("dp2", "test.cn", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("com", "", ""))
-
-	test("dp3", "test.com", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantLocal, nil, genTestDomainPolicies("", "com", ""))
-	test("dp4", "test.com", 500, 0, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("", "com", ""))
-
-	test("dp5", "test.cn", 0, 500, ip("0.0.0.1"), ip("0.0.0.2"), wantRemote, nil, genTestDomainPolicies("", "com", "cn"))
-
-}
-
-const (
-	benchFlow uint8 = iota
-	benchConcurrent
-	benchConcurrentCPUThread
-)
-
-func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) {
-	d, closeServer, err := initTestDispatherAndServer(time.Duration(ll)*time.Millisecond, time.Duration(rl)*time.Millisecond, lIP, rIP, ipPo, doPo)
-	if err != nil {
-		b.Fatalf("[%s] init dispatcher, %v", testID, err)
-	}
-	defer closeServer()
-
-	b.ResetTimer()
-	switch mode {
-	case benchFlow:
-		for i := 0; i < b.N; i++ {
-			r := d.serveDNS(new(dns.Msg).SetQuestion(dns.Fqdn(domain), dns.TypeA), d.entry)
-			if r == nil {
-				b.Fatal("err")
-			}
-		}
-	case benchConcurrent:
-		wg := sync.WaitGroup{}
-		var ec int32
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			for j := 0; j < 1000; j++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					q := new(dns.Msg)
-					q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-					r := d.serveDNS(q, d.entry)
-					if r == nil {
-						atomic.AddInt32(&ec, 1)
-						// panic("err")
-					}
-				}()
-			}
-			wg.Wait()
-		}
-		if ec > 0 {
-			b.Fatal(fmt.Sprintf("err: %d\n", ec))
-		}
-	case benchConcurrentCPUThread:
-		var ec int32
-		b.RunParallel(func(pb *testing.PB) {
-			for pb.Next() {
-				q := new(dns.Msg)
-				q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-				r := d.serveDNS(q, d.entry)
-				if r == nil {
-					atomic.AddInt32(&ec, 1)
-				}
-			}
-		})
-		if ec > 0 {
-			b.Fatal(fmt.Sprintf("err: %d\n", ec))
-		}
-	}
-}
-
-func Benchmark_dispatcher_flow(b *testing.B) {
-	logrus.SetLevel(logrus.WarnLevel)
-	b.ReportAllocs()
-
-	bench("dp", benchFlow, b, "test.com", 0, 0, ip("0.0.0.1"), ip("0.0.0.2"), nil, genTestDomainPolicies("", "com", "cn"))
-}
-
-func Benchmark_dispatcher_concurrent(b *testing.B) {
-	logrus.SetLevel(logrus.WarnLevel)
-	b.ReportAllocs()
-
-	bench("dp", benchConcurrent, b, "test.com", 0, 0, ip("0.0.0.1"), ip("0.0.0.2"), nil, genTestDomainPolicies("", "com", "cn"))
-}
-
-func Benchmark_dispatcher_concurrent_cpu_thread(b *testing.B) {
-	logrus.SetLevel(logrus.WarnLevel)
-	b.ReportAllocs()
-
-	bench("dp", benchConcurrentCPUThread, b, "test.com", 0, 0, ip("0.0.0.1"), ip("0.0.0.2"), nil, genTestDomainPolicies("", "com", "cn"))
-}

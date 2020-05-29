@@ -209,3 +209,31 @@ func generateCertificate() (cert tls.Certificate, err error) {
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
+
+type vServer struct {
+	latency time.Duration
+	ip      net.IP
+}
+
+func (s *vServer) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
+
+	name := q.Question[0].Name
+
+	r := new(dns.Msg)
+	r.SetReply(q)
+	var rr dns.RR
+	hdr := dns.RR_Header{
+		Name:     name,
+		Class:    dns.ClassINET,
+		Ttl:      300,
+		Rdlength: 0,
+	}
+
+	hdr.Rrtype = dns.TypeA
+
+	rr = &dns.A{Hdr: hdr, A: s.ip}
+	r.Answer = append(r.Answer, rr)
+
+	time.Sleep(s.latency)
+	w.WriteMsg(r)
+}
