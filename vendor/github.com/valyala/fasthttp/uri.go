@@ -263,6 +263,10 @@ func (u *URI) Parse(host, uri []byte) {
 func (u *URI) parse(host, uri []byte, isTLS bool) {
 	u.Reset()
 
+	if stringContainsCTLByte(uri) {
+		return
+	}
+
 	if len(host) == 0 || bytes.Contains(uri, strColonSlashSlash) {
 		scheme, newHost, newURI := splitHostURI(host, uri)
 		u.scheme = append(u.scheme, scheme...)
@@ -280,11 +284,11 @@ func (u *URI) parse(host, uri []byte, isTLS bool) {
 		host = host[n+1:]
 
 		if n := bytes.Index(auth, strColon); n >= 0 {
-			u.username = auth[:n]
-			u.password = auth[n+1:]
+			u.username = append(u.username[:0], auth[:n]...)
+			u.password = append(u.password[:0], auth[n+1:]...)
 		} else {
-			u.username = auth
-			u.password = auth[:0] // Make sure it's not nil
+			u.username = append(u.username[:0], auth...)
+			u.password = u.password[:0]
 		}
 	}
 
@@ -580,4 +584,15 @@ func (u *URI) parseQueryArgs() {
 	}
 	u.queryArgs.ParseBytes(u.queryString)
 	u.parsedQueryArgs = true
+}
+
+// stringContainsCTLByte reports whether s contains any ASCII control character.
+func stringContainsCTLByte(s []byte) bool {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b < ' ' || b == 0x7f {
+			return true
+		}
+	}
+	return false
 }
