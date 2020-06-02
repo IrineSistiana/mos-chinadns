@@ -19,6 +19,7 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 
@@ -26,42 +27,59 @@ import (
 	"github.com/miekg/dns"
 )
 
+const (
+	unknownBrokenDataSize = -1
+)
+
 // readMsgFromTCP reads msg from a tcp connection, m should be
 // released by bufpool.ReleaseMsgBuf when m is no longer used.
-func readMsgFromTCP(c net.Conn) (mRaw *bufpool.MsgBuf, err error) {
+// brokenDataLeft indicates the frame size which have not be read from c.
+// if brokenDataLeft is unknownBrokenDataSize(-1), c should not be reused anymore.
+// if brokenDataLeft > 0, means some data has be read from c.
+func readMsgFromTCP(c net.Conn) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
 	lengthRaw := bufpool.AcquireMsgBuf(2)
 	defer bufpool.ReleaseMsgBuf(lengthRaw)
-	if _, err := io.ReadFull(c, lengthRaw.B); err != nil {
-		return nil, err
+
+	n1, err := io.ReadFull(c, lengthRaw.B)
+	n = n + n1
+	if err != nil {
+		if n1 == 0 {
+			return nil, 0, 0, err
+		}
+		return nil, unknownBrokenDataSize, n, err
 	}
 
 	// dns headerSize
 	length := binary.BigEndian.Uint16(lengthRaw.B)
 	if length < 12 {
-		return nil, dns.ErrShortRead
+		return nil, unknownBrokenDataSize, n, dns.ErrShortRead
 	}
 
 	buf := bufpool.AcquireMsgBuf(int(length))
-	if _, err := io.ReadFull(c, buf.B); err != nil {
+	n2, err := io.ReadFull(c, buf.B)
+	n = n + n2
+	if err != nil {
 		bufpool.ReleaseMsgBuf(buf)
-		return nil, err
+		return nil, int(length) - n2, n, err
 	}
 
-	return buf, nil
+	return buf, 0, n, nil
 }
 
-func writeMsgToTCP(c net.Conn, m []byte) (err error) {
-	l := bufpool.AcquireMsgBuf(2)
+func writeMsgToTCP(c net.Conn, m []byte) (n int, err error) {
+	l := bufpool.AcquireMsgBuf(2 + len(m))
 	defer bufpool.ReleaseMsgBuf(l)
 	binary.BigEndian.PutUint16(l.B, uint16(len(m)))
-
-	_, err = (&net.Buffers{l.B, m}).WriteTo(c)
-	return err
+	copy(l.B[2:], m)
+	n, err = c.Write(l.B)
+	if n != 0 && n < len(l.B) {
+		return n, fmt.Errorf("%s: net.Conn.Write(): %s", io.ErrShortWrite, err)
+	}
+	return 0, err
 }
 
-func writeMsgToUDP(c net.Conn, m []byte) (err error) {
-	_, err = c.Write(m)
-	return err
+func writeMsgToUDP(c net.Conn, m []byte) (n int, err error) {
+	return c.Write(m)
 }
 
 func readMsgFromUDP(c net.Conn, maxSize int) (m *bufpool.MsgBuf, err error) {

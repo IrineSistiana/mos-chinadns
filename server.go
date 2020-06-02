@@ -62,7 +62,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 
 				for {
 					c.SetDeadline(time.Now().Add(serverTimeout))
-					qRaw, err := readMsgFromTCP(c)
+					qRaw, _, _, err := readMsgFromTCP(c)
 					if err != nil {
 						return
 					}
@@ -94,7 +94,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						}
 						defer bufpool.ReleaseMsgBuf(rRaw)
 
-						err = writeMsgToTCP(c, rRaw.B)
+						_, err = writeMsgToTCP(c, rRaw.B)
 						if err != nil {
 							requestLogger.Warnf("ListenAndServe: writeMsgToTCP: %v", err)
 						}

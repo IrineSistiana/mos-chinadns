@@ -44,7 +44,7 @@ const (
 
 var (
 	errServerFailed  = errors.New("server failed")
-	errServerTimeout = errors.New("server timeout")
+	errServerTimeout = errors.New("server timed out")
 )
 
 type dispatcher struct {
