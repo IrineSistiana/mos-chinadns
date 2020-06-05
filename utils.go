@@ -95,5 +95,5 @@ func readMsgFromUDP(c net.Conn, maxSize int) (m *bufpool.MsgBuf, n int, err erro
 		return nil, n, dns.ErrShortRead
 	}
 	buf.B = buf.B[:n]
-	return nil, n, err
+	return buf, n, err
 }
