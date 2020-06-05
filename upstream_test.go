@@ -42,9 +42,7 @@ import (
 func Test_upstream(t *testing.T) {
 
 	testUpstream := func(name string, u upstream) {
-
 		wg := sync.WaitGroup{}
-
 		errs := make([]error, 0)
 		errsLock := sync.Mutex{}
 		logErr := func(err error) {
@@ -94,6 +92,25 @@ func Test_upstream(t *testing.T) {
 		}
 	}
 
+	testUpstreamTimeout := func(name string, u upstream) {
+		q := new(dns.Msg)
+		q.SetQuestion("example.com.", dns.TypeA)
+		qRaw, err := q.Pack()
+		if err != nil {
+			t.Fatal(err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*50)
+		defer cancel()
+		rRaw, _, err := u.Exchange(ctx, qRaw, logrus.NewEntry(logrus.StandardLogger()))
+		if err != nil {
+			return
+		}
+		t.Fatalf("%s: err here, got %v", name, rRaw)
+	}
+
+	testServer := &vServer{ip: net.IPv4(1, 2, 3, 4), latency: 0}
+
 	// test udp
 	func() {
 		udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -101,7 +118,7 @@ func Test_upstream(t *testing.T) {
 			t.Fatal(err)
 		}
 		addr := udpConn.LocalAddr().String()
-		rs := dns.Server{Net: "udp", PacketConn: udpConn, Handler: &vServer{ip: net.IPv4(1, 2, 3, 4), latency: 0}}
+		rs := dns.Server{Net: "udp", PacketConn: udpConn, Handler: testServer}
 		go rs.ActivateAndServe()
 		defer rs.Shutdown()
 
@@ -114,6 +131,9 @@ func Test_upstream(t *testing.T) {
 			t.Fatal(err)
 		}
 		testUpstream("udp", upstreamUDP)
+		testServer.shutdowned = true
+		testUpstreamTimeout("udp timeout", upstreamUDP)
+		testServer.shutdowned = false
 	}()
 
 	// test tcp
@@ -123,7 +143,7 @@ func Test_upstream(t *testing.T) {
 			t.Fatal(err)
 		}
 		addr := tcpListener.Addr().String()
-		rs := dns.Server{Net: "tcp", Listener: tcpListener, Handler: &vServer{ip: net.IPv4(1, 2, 3, 4), latency: 0}}
+		rs := dns.Server{Net: "tcp", Listener: tcpListener, Handler: testServer}
 		go rs.ActivateAndServe()
 		defer rs.Shutdown()
 		sc := &BasicServerConfig{
@@ -136,6 +156,9 @@ func Test_upstream(t *testing.T) {
 			t.Fatal(err)
 		}
 		testUpstream("tcp", upstreamTCP)
+		testServer.shutdowned = true
+		testUpstreamTimeout("tcp timeout", upstreamTCP)
+		testServer.shutdowned = false
 	}()
 
 	// test dot
@@ -151,7 +174,7 @@ func Test_upstream(t *testing.T) {
 			t.Fatal(err)
 		}
 		addr := tlsListener.Addr().String()
-		rs := dns.Server{Net: "tcp-tls", Listener: tlsListener, TLSConfig: tlsConfig, Handler: &vServer{ip: net.IPv4(1, 2, 3, 4), latency: 0}}
+		rs := dns.Server{Net: "tcp-tls", Listener: tlsListener, TLSConfig: tlsConfig, Handler: testServer}
 		go rs.ActivateAndServe()
 		defer rs.Shutdown()
 		sc := &BasicServerConfig{
@@ -165,6 +188,9 @@ func Test_upstream(t *testing.T) {
 			t.Fatal(err)
 		}
 		testUpstream("dot", upstreamDot)
+		testServer.shutdowned = true
+		testUpstreamTimeout("dot timeout", upstreamDot)
+		testServer.shutdowned = false
 	}()
 
 	// TODO add tests for DoH
@@ -214,14 +240,17 @@ func generateCertificate() (cert tls.Certificate, err error) {
 }
 
 type vServer struct {
-	latency time.Duration
-	ip      net.IP
+	latency    time.Duration
+	shutdowned bool
+	ip         net.IP
 }
 
 func (s *vServer) ServeDNS(w dns.ResponseWriter, q *dns.Msg) {
+	if s.shutdowned {
+		return
+	}
 
 	name := q.Question[0].Name
-
 	r := new(dns.Msg)
 	r.SetReply(q)
 	var rr dns.RR

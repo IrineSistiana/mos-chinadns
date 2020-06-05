@@ -54,8 +54,8 @@ type upstream interface {
 type upstreamCommon struct {
 	addr        string
 	dialNewConn func() (net.Conn, error)
-	writeMsg    func(c net.Conn, msg []byte) (int, error)
-	readMsg     func(c net.Conn) (msg *bufpool.MsgBuf, brokenDataLeft int, n int, err error)
+	writeMsg    func(c io.Writer, msg []byte) (int, error)
+	readMsg     func(c io.Reader) (msg *bufpool.MsgBuf, brokenDataLeft int, n int, err error)
 
 	cp *connPool
 }
@@ -72,14 +72,10 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 		dialUDP := func() (net.Conn, error) {
 			return net.DialTimeout("udp", sc.Addr, dialUDPTimeout)
 		}
-		readUDPMsg := func(c net.Conn) (msg *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
-			msg, n, err = readMsgFromUDP(c, maxUDPSize)
-			return
-		}
 		client = &upstreamCommon{
 			addr:        sc.Addr,
 			dialNewConn: dialUDP,
-			readMsg:     readUDPMsg,
+			readMsg:     readMsgFromUDP,
 			writeMsg:    writeMsgToUDP,
 			cp:          newConnPool(0xffff, time.Second*10, time.Second*5),
 		}
@@ -261,7 +257,7 @@ read:
 
 ioErr:
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() && queryCtx.Err() != nil && dc.frameleft != unknownBrokenDataSize {
-		entry.Warnf("exchange: ioErr: netErr.Timeout: %v", err)
+		entry.Debugf("exchange: io timeout Err after ctx was done: %v", err)
 		// err caused by cancelled ctx, it's ok to reuse the connection
 		once.Do(func() {}) // do nothing, just fire the once
 		u.cp.put(dc)

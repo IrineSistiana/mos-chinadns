@@ -15,9 +15,6 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//     This file is a modified version from github.com/xtaci/smux/blob/master/alloc.go f386d90
-//     license of smux: MIT https://github.com/xtaci/smux/blob/master/LICENSE
-
 package bufpool
 
 import (

@@ -21,7 +21,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"net"
 
 	"github.com/IrineSistiana/mos-chinadns/bufpool"
 	"github.com/miekg/dns"
@@ -36,16 +35,13 @@ const (
 // brokenDataLeft indicates the frame size which have not be read from c.
 // if brokenDataLeft is unknownBrokenDataSize(-1), c should not be reused anymore.
 // if brokenDataLeft > 0, means some data has be read from c.
-func readMsgFromTCP(c net.Conn) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
+func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
 	lengthRaw := bufpool.AcquireMsgBuf(2)
 	defer bufpool.ReleaseMsgBuf(lengthRaw)
 
 	n1, err := io.ReadFull(c, lengthRaw.B)
 	n = n + n1
 	if err != nil {
-		if n1 == 0 {
-			return nil, 0, 0, err
-		}
 		return nil, unknownBrokenDataSize, n, err
 	}
 
@@ -66,23 +62,28 @@ func readMsgFromTCP(c net.Conn) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n int
 	return buf, 0, n, nil
 }
 
-func writeMsgToTCP(c net.Conn, m []byte) (n int, err error) {
+func writeMsgToTCP(c io.Writer, m []byte) (n int, err error) {
 	l := bufpool.AcquireMsgBuf(2 + len(m))
 	defer bufpool.ReleaseMsgBuf(l)
 	binary.BigEndian.PutUint16(l.B, uint16(len(m)))
 	copy(l.B[2:], m)
 	n, err = c.Write(l.B)
 	if n != 0 && n < len(l.B) {
-		return n, fmt.Errorf("%s: net.Conn.Write(): %s", io.ErrShortWrite, err)
+		return n, fmt.Errorf("%v: %v", io.ErrShortWrite, err)
 	}
 	return 0, err
 }
 
-func writeMsgToUDP(c net.Conn, m []byte) (n int, err error) {
+func writeMsgToUDP(c io.Writer, m []byte) (n int, err error) {
 	return c.Write(m)
 }
 
-func readMsgFromUDP(c net.Conn, maxSize int) (m *bufpool.MsgBuf, n int, err error) {
+func readMsgFromUDP(c io.Reader) (m *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
+	m, n, err = readMsgFromUDPWithLimit(c, maxUDPSize)
+	return
+}
+
+func readMsgFromUDPWithLimit(c io.Reader, maxSize int) (m *bufpool.MsgBuf, n int, err error) {
 	buf := bufpool.AcquireMsgBuf(maxSize)
 
 	n, err = c.Read(buf.B)
