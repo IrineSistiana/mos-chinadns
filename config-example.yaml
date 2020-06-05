@@ -88,10 +88,10 @@ server:
         tcp:
             idle_timeout: 10
         dot:
-            server_name: "https://cloudflare-dns.com/dns-query" 
+            server_name: "cloudflare-dns.com" 
             idle_timeout: 10
         doh:
-            url: "cloudflare-dns.com"
+            url: "https://cloudflare-dns.com/dns-query"
             fasthttp: false
 
         # 延时启动时间 单位: 毫秒 

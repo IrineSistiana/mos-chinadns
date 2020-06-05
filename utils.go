@@ -82,18 +82,18 @@ func writeMsgToUDP(c net.Conn, m []byte) (n int, err error) {
 	return c.Write(m)
 }
 
-func readMsgFromUDP(c net.Conn, maxSize int) (m *bufpool.MsgBuf, err error) {
+func readMsgFromUDP(c net.Conn, maxSize int) (m *bufpool.MsgBuf, n int, err error) {
 	buf := bufpool.AcquireMsgBuf(maxSize)
 
-	n, err := c.Read(buf.B)
+	n, err = c.Read(buf.B)
 	if err != nil {
 		bufpool.ReleaseMsgBuf(buf)
-		return nil, err
+		return nil, n, err
 	}
 	if n < 12 {
 		bufpool.ReleaseMsgBuf(buf)
-		return nil, dns.ErrShortRead
+		return nil, n, dns.ErrShortRead
 	}
 	buf.B = buf.B[:n]
-	return buf, err
+	return nil, n, err
 }

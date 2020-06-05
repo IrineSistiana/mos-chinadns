@@ -73,8 +73,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 			return net.DialTimeout("udp", sc.Addr, dialUDPTimeout)
 		}
 		readUDPMsg := func(c net.Conn) (msg *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
-			msg, err = readMsgFromUDP(c, maxUDPSize)
-			n = len(msg.B)
+			msg, n, err = readMsgFromUDP(c, maxUDPSize)
 			return
 		}
 		client = &upstreamCommon{
