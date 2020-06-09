@@ -105,7 +105,7 @@ func Test_readMsgFromTCP(t *testing.T) {
 		{"normal", args{bytes.NewBuffer(getData())}, rawData, 0, len(rawData) + 2, false},
 		{"header short read", args{bytes.NewBuffer(getData()[:11])}, nil, len(rawData) - 9, 11, true},
 		{"msg short read", args{bytes.NewBuffer(getData()[:13])}, nil, len(rawData) - 11, 13, true},
-		{"no data", args{bytes.NewBuffer(nil)}, nil, unknownBrokenDataSize, 0, true},
+		{"no data", args{bytes.NewBuffer(nil)}, nil, 0, 0, true},
 		{"invalid length", args{bytes.NewBuffer([]byte{0, 1, 0})}, nil, unknownBrokenDataSize, 2, true},
 	}
 	for _, tt := range tests {

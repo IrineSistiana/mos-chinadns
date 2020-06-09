@@ -71,7 +71,7 @@ func Test_upstream(t *testing.T) {
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 				defer cancel()
-				rRaw, _, err := u.Exchange(ctx, qRaw, logrus.NewEntry(logrus.StandardLogger()))
+				rRaw, err := u.Exchange(ctx, qRaw, logrus.NewEntry(logrus.StandardLogger()))
 				if err != nil {
 					logErr(err)
 					return
@@ -101,7 +101,7 @@ func Test_upstream(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*50)
 		defer cancel()
-		rRaw, _, err := u.Exchange(ctx, qRaw, logrus.NewEntry(logrus.StandardLogger()))
+		rRaw, err := u.Exchange(ctx, qRaw, logrus.NewEntry(logrus.StandardLogger()))
 		if err != nil {
 			return
 		}
@@ -125,7 +125,7 @@ func Test_upstream(t *testing.T) {
 			Addr:     addr,
 			Protocol: "udp",
 		}
-		upstreamUDP, err := newUpstream(sc, nil)
+		upstreamUDP, err := newUpstream(sc, 100, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +150,7 @@ func Test_upstream(t *testing.T) {
 			Protocol: "tcp",
 		}
 		sc.TCP.IdleTimeout = 8
-		upstreamTCP, err := newUpstream(sc, nil)
+		upstreamTCP, err := newUpstream(sc, 100, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,7 +182,7 @@ func Test_upstream(t *testing.T) {
 			insecureSkipVerify: true,
 		}
 		sc.DoT.IdleTimeout = 10
-		upstreamDot, err := newUpstream(sc, nil)
+		upstreamDot, err := newUpstream(sc, 100, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

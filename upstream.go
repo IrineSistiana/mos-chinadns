@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -32,7 +33,6 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mos-chinadns/utils"
-	"github.com/valyala/fasthttp"
 	"golang.org/x/net/http2"
 
 	"github.com/IrineSistiana/mos-chinadns/bufpool"
@@ -44,13 +44,19 @@ const (
 	tlsHandshakeTimeout = time.Second * 3
 	dialTCPTimeout      = time.Second * 2
 	dialUDPTimeout      = time.Second * 2
+	generalIOTimeout    = time.Second * 1
+	dotIOTimeout        = time.Second * 5
+)
+
+var (
+	errOperationAborted = errors.New("operation aborted")
 )
 
 type upstream interface {
-	Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, rtt time.Duration, err error)
+	Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, err error)
 }
 
-// upstreamCommon represents a tcp/tls server
+// upstreamCommon represents a udp/tcp/tls server
 type upstreamCommon struct {
 	addr        string
 	dialNewConn func() (net.Conn, error)
@@ -60,19 +66,25 @@ type upstreamCommon struct {
 	cp *connPool
 }
 
-func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error) {
+// upstreamWithLimit represents server but has a concurrent limitation
+type upstreamWithLimit struct {
+	bk *bucket
+	u  upstream
+}
+
+func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.CertPool) (upstream, error) {
 	if sc == nil {
-		panic("newUpstream: sc is nil")
+		return nil, errors.New("no server config")
 	}
 
-	var client upstream
+	var upstream upstream
 	var err error
 	switch sc.Protocol {
 	case "udp", "":
 		dialUDP := func() (net.Conn, error) {
 			return net.DialTimeout("udp", sc.Addr, dialUDPTimeout)
 		}
-		client = &upstreamCommon{
+		upstream = &upstreamCommon{
 			addr:        sc.Addr,
 			dialNewConn: dialUDP,
 			readMsg:     readMsgFromUDP,
@@ -84,7 +96,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 		dialTCP := func() (net.Conn, error) {
 			return net.DialTimeout("tcp", sc.Addr, dialTCPTimeout)
 		}
-		client = &upstreamCommon{
+		upstream = &upstreamCommon{
 			addr:        sc.Addr,
 			dialNewConn: dialTCP,
 			readMsg:     readMsgFromTCP,
@@ -116,7 +128,7 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 			}
 			return tlsConn, nil
 		}
-		client = &upstreamCommon{
+		upstream = &upstreamCommon{
 			addr:        sc.Addr,
 			dialNewConn: dialTLS,
 			readMsg:     readMsgFromTCP,
@@ -136,26 +148,36 @@ func newUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (upstream, error
 		if len(sc.DoH.URL) == 0 {
 			return nil, fmt.Errorf("protocol [%s] needs URL", sc.Protocol)
 		}
-		client, err = newDoHUpstream(sc.DoH.URL, sc.Addr, tlsConf, sc.DoH.FastHTTP)
+		upstream, err = newDoHUpstream(sc.DoH.URL, sc.Addr, tlsConf)
 		if err != nil {
 			return nil, err
 		}
 	default:
 		return nil, fmt.Errorf("unsupport protocol: %s", sc.Protocol)
 	}
-
-	return client, nil
+	limitedUpstream := &upstreamWithLimit{bk: newBucket(maxConcurrentQueries), u: upstream}
+	return limitedUpstream, nil
 }
 
-func (u *upstreamCommon) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, rtt time.Duration, err error) {
-	t := time.Now()
-	rRaw, err = u.exchange(ctx, qRaw, entry, false)
-	return rRaw, time.Since(t), err
+var (
+	errTooManyConcurrentQueries = errors.New("too many concurrent queries")
+)
+
+func (u *upstreamWithLimit) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
+	if u.bk.aquire() == false {
+		return nil, errTooManyConcurrentQueries
+	}
+	defer u.bk.release()
+	return u.u.Exchange(ctx, qRaw, entry)
+}
+
+func (u *upstreamCommon) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
+	return u.exchange(ctx, qRaw, entry, false)
 }
 
 func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry, forceNewConn bool) (rRaw *bufpool.MsgBuf, err error) {
 	if err = ctx.Err(); err != nil {
-		return nil, err
+		return nil, errOperationAborted
 	}
 
 	if len(qRaw) < 12 {
@@ -172,38 +194,30 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 	if dc == nil {
 		c, err := u.dialNewConn()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to dial new conntion: %v", err)
 		}
-
 		dc = newDNSConn(c, time.Now())
-
 		isNewConn = true
 		// dialNewConn might take some time, check if ctx is done
 		if err = ctx.Err(); err != nil {
 			u.cp.put(dc)
-			return nil, err
+			return nil, errOperationAborted
 		}
 	} else {
 		dc.msgID++
-		dc.SetDeadline(time.Time{}) // overwrite ddl
 	}
 
-	queryCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var queryCtx context.Context
+	var cancel func()
 	// this once is to make sure that the following
 	// dc.Conn.SetDeadline wouldn't be called after dc is put into connPool
 	once := sync.Once{}
-	go func() {
-		select {
-		case <-queryCtx.Done():
-			once.Do(func() { dc.SetDeadline(time.Now()) })
-		}
-	}()
-
-	// write first
 	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
 	defer bufpool.ReleaseMsgBuf(qRawCopy)
 	originalID := utils.ExchangeMsgID(dc.msgID, qRawCopy.B)
+
+	// write first
+	dc.SetDeadline(time.Now().Add(generalIOTimeout)) // give write enough time to complete, avoid broken write.
 	n, err := u.writeMsg(dc.Conn, qRawCopy.B)
 	if n > 0 {
 		dc.lastIO = time.Now()
@@ -212,10 +226,20 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 		goto ioErr
 	}
 
+	dc.SetDeadline(time.Time{}) // overwrite ddl, this ddl should be handled by queryCtx
+	queryCtx, cancel = context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-queryCtx.Done():
+			once.Do(func() { dc.SetDeadline(time.Now()) })
+		}
+	}()
+
 	// if we need to empty the conn (some data of previous reply)
 	if dc.frameleft > 0 {
 		buf := bufpool.AcquireMsgBuf(dc.frameleft)
-		n, err := io.ReadFull(dc, buf.B)
+		n, err = io.ReadFull(dc, buf.B)
 		bufpool.ReleaseMsgBuf(buf)
 		if n > 0 {
 			dc.lastIO = time.Now()
@@ -245,7 +269,8 @@ read:
 		} else {
 			// new connection should not receive a mismatched id, this is an error
 			dc.Close()
-			return nil, dns.ErrId
+			err = dns.ErrId
+			goto ioErr
 		}
 	}
 
@@ -256,21 +281,24 @@ read:
 	return rRaw, nil
 
 ioErr:
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() && queryCtx.Err() != nil && dc.frameleft != unknownBrokenDataSize {
-		entry.Debugf("exchange: io timeout Err after ctx was done: %v", err)
-		// err caused by cancelled ctx, it's ok to reuse the connection
+	// err caused by cancelled ctx, it's ok to reuse the connection
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		if dc.frameleft == unknownBrokenDataSize {
+			dc.Close()
+			return nil, fmt.Errorf("conn is broken, %v", err)
+		}
 		once.Do(func() {}) // do nothing, just fire the once
 		u.cp.put(dc)
-		return nil, err
-	}
-	dc.Close()
-	if isNewConn { // new connection shouldn't have any err
-		entry.Warnf("exchange: new conn fatal ioErr: %v", err)
-		return nil, err
+		return nil, errOperationAborted
 	}
 
+	if isNewConn { // new connection shouldn't have any other type of err
+		dc.Close()
+		return nil, fmt.Errorf("new conn io err, %v", err)
+	}
+	dc.Close()
 	// reused connection got an unexpected err, open a new conn and try again
-	entry.Warnf("exchange: reused conn ioErr: %v", err)
+	entry.Warnf("exchange: reused conn io err: %v", err)
 	return u.exchange(ctx, qRaw, entry, true)
 }
 
@@ -409,19 +437,12 @@ func (p *connPool) disabled() bool {
 	return p == nil || p.maxSize <= 0 || p.ttl <= 0
 }
 
-const (
-	fastHTTPIOTimeout = time.Second * 3
-)
-
 type upstreamDoH struct {
-	useFastHTTP bool
 	preparedURL []byte
-
-	fasthttpClient *fasthttp.HostClient
-	netHTTPClient  *http.Client
+	client      *http.Client
 }
 
-func newDoHUpstream(urlStr, addr string, tlsConfig *tls.Config, fastHTTP bool) (*upstreamDoH, error) {
+func newDoHUpstream(urlStr, addr string, tlsConfig *tls.Config) (*upstreamDoH, error) {
 	// check urlStr
 	u, err := url.ParseRequestURI(urlStr)
 	if err != nil {
@@ -442,74 +463,43 @@ func newDoHUpstream(urlStr, addr string, tlsConfig *tls.Config, fastHTTP bool) (
 
 	c := new(upstreamDoH)
 	c.preparedURL = []byte(urlStr)
-	c.useFastHTTP = fastHTTP
 
-	if fastHTTP {
-		c.fasthttpClient = &fasthttp.HostClient{
-			Addr: u.Hostname(),
-			Dial: func(_ string) (net.Conn, error) {
-				d := net.Dialer{Timeout: fastHTTPIOTimeout}
-				return d.Dial("tcp", addr)
-			},
-			IsTLS:                         true,
-			TLSConfig:                     tlsConfig,
-			ReadTimeout:                   fastHTTPIOTimeout,
-			WriteTimeout:                  fastHTTPIOTimeout,
-			MaxResponseBodySize:           dns.MaxMsgSize,
-			DisableHeaderNamesNormalizing: true,
-			DisablePathNormalizing:        true,
-			NoDefaultUserAgentHeader:      true,
-		}
-	} else {
-		tc := new(tls.Config)
-		if tlsConfig != nil {
-			tc = tlsConfig.Clone()
-		}
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := net.Dialer{}
-				return d.DialContext(ctx, network, addr)
-			},
-			TLSClientConfig: tc,
+	tc := new(tls.Config)
+	if tlsConfig != nil {
+		tc = tlsConfig.Clone()
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{}
+			return d.DialContext(ctx, network, addr)
+		},
+		TLSClientConfig:       tc,
+		IdleConnTimeout:       time.Minute,
+		ResponseHeaderTimeout: time.Second * 5,
+		ForceAttemptHTTP2:     true,
+	}
 
-			IdleConnTimeout:       time.Minute,
-			ResponseHeaderTimeout: time.Second * 5,
-			ForceAttemptHTTP2:     true,
-		}
-
-		err := http2.ConfigureTransport(transport) // enable http2
-		if err != nil {
-			return nil, err
-		}
-		c.netHTTPClient = &http.Client{
-			Transport: transport,
-		}
+	err = http2.ConfigureTransport(transport) // enable http2
+	if err != nil {
+		return nil, err
+	}
+	c.client = &http.Client{
+		Transport: transport,
 	}
 
 	return c, nil
 }
 
-// some consistent string vars for DoH client
-var (
-	headerCanonicalKeyAccept = []byte("Accept")
-	headerValueMediaType     = []byte("application/dns-message")
-	dohCommomHeader          = http.Header{"Accept": []string{"application/dns-message"}}
-)
-
-func (u *upstreamDoH) Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, rtt time.Duration, err error) {
-	t := time.Now()
-	r, err := u.exchange(ctx, qRaw, requestLogger)
-	return r, time.Since(t), err
-}
-
-func (u *upstreamDoH) exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
+//Exchange: dot upstream has its own context to control timeout, it will not follow the ctx.
+func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
 	if len(qRaw) < 12 {
 		return nil, dns.ErrShortRead // avoid panic when access msg id in m[0] and m[1]
 	}
 
-	qRawCopy := bufpool.AcquireMsgBuf(len(qRaw))
+	ctx, cancel := context.WithTimeout(context.Background(), dotIOTimeout)
+	defer cancel()
+	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
 	defer bufpool.ReleaseMsgBuf(qRawCopy)
-	copy(qRawCopy.B, qRaw)
 
 	// In order to maximize HTTP cache friendliness, DoH clients using media
 	// formats that include the ID field from the DNS message header, such
@@ -521,22 +511,16 @@ func (u *upstreamDoH) exchange(ctx context.Context, qRaw []byte, requestLogger *
 	// Padding characters for base64url MUST NOT be included.
 	// See: https://tools.ietf.org/html/rfc8484 6
 	// That's why we use base64.RawURLEncoding
-	urlLen := len(u.preparedURL) + base64.RawURLEncoding.EncodedLen(len(qRawCopy.B))
-	urlBytes := bufpool.AcquireMsgBuf(urlLen)
-	copy(urlBytes.B, u.preparedURL)
-	base64MsgStart := len(u.preparedURL)
-	base64.RawURLEncoding.Encode(urlBytes.B[base64MsgStart:], qRawCopy.B)
+	urlBuilder := bufpool.AcquireStringBuilder()
+	defer bufpool.ReleaseStringBuilder(urlBuilder)
+	urlBuilder.Write(u.preparedURL)
+	encoder := base64.NewEncoder(base64.RawURLEncoding, urlBuilder)
+	encoder.Write(qRawCopy.B)
+	encoder.Close()
 
-	if u.useFastHTTP {
-		rRaw, err = u.doFasthttp(urlBytes.B, requestLogger)
-		if err != nil {
-			return nil, fmt.Errorf("doFasthttp: %w", err)
-		}
-	} else {
-		rRaw, err = u.doHTTP(ctx, string(urlBytes.B), requestLogger)
-		if err != nil {
-			return nil, fmt.Errorf("doHTTP: %w", err)
-		}
+	rRaw, err = u.doHTTP(ctx, urlBuilder.String(), requestLogger)
+	if err != nil {
+		return nil, fmt.Errorf("doHTTP: %w", err)
 	}
 
 	// change the id back
@@ -548,50 +532,15 @@ func (u *upstreamDoH) exchange(ctx context.Context, qRaw []byte, requestLogger *
 	return rRaw, nil
 }
 
-func (u *upstreamDoH) doFasthttp(url []byte, requestLogger *logrus.Entry) (*bufpool.MsgBuf, error) {
-	//Note: It is forbidden copying Request instances. Create new instances and use CopyTo instead.
-	//Request instance MUST NOT be used from concurrently running goroutines.
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-	req.SetRequestURIBytes(url)
-	req.Header.SetMethod(fasthttp.MethodGet)
-	req.Header.SetCanonical(headerCanonicalKeyAccept, headerValueMediaType)
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-
-	if err := u.fasthttpClient.Do(req, resp); err != nil {
-		return nil, fmt.Errorf("Do: %w", err)
-	}
-
-	// check Content_Length
-	if resp.Header.ContentLength() > dns.MaxMsgSize {
-		return nil, fmt.Errorf("ContentLength is too big [%d]", resp.Header.ContentLength())
-	}
-
-	// check statu code
-	statusCode := resp.StatusCode()
-	if statusCode != fasthttp.StatusOK {
-		return nil, fmt.Errorf("HTTP status codes [%d]", statusCode)
-	}
-
-	body := resp.Body()
-	if len(body) < 12 {
-		return nil, dns.ErrShortRead
-	}
-
-	rRaw := bufpool.AcquireMsgBufAndCopy(body)
-	return rRaw, nil
-}
-
 func (u *upstreamDoH) doHTTP(ctx context.Context, url string, requestLogger *logrus.Entry) (*bufpool.MsgBuf, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("NewRequestWithContext: %w", err)
 	}
-	req.Header = dohCommomHeader.Clone()
+	req.Header["Accept"] = []string{"application/dns-message"}
 
-	resp, err := u.netHTTPClient.Do(req)
+	resp, err := u.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Do: %w", err)
 	}

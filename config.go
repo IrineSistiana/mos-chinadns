@@ -77,8 +77,7 @@ type BasicServerConfig struct {
 	} `yaml:"dot"`
 
 	DoH struct {
-		URL      string `yaml:"url"`
-		FastHTTP bool   `yaml:"fasthttp"`
+		URL string `yaml:"url"`
 	} `yaml:"doh"`
 
 	// for test only

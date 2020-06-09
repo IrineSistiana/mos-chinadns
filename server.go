@@ -34,7 +34,6 @@ const (
 )
 
 func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error {
-	bk := newBucket(d.maxConcurrentQueries)
 
 	switch network {
 	case "tcp":
@@ -67,28 +66,16 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						return
 					}
 
-					if bk.aquire() == false { // too many concurrent queries
+					q := new(dns.Msg)
+					err = q.Unpack(qRaw.B)
+					if err != nil { // invalid msg, drop it
 						bufpool.ReleaseMsgBuf(qRaw)
-						continue // drop it
+						continue
 					}
 
+					requestLogger := getRequestLogger(d.entry.Logger, c.RemoteAddr().String(), q.Id, q.Question, "tcp")
 					go func() {
-						defer bufpool.ReleaseMsgBuf(qRaw)
-						defer bk.release()
-
-						q := new(dns.Msg)
-						err = q.Unpack(qRaw.B)
-						if err != nil { // invalid msg
-							return
-						}
-
-						requestLogger := d.entry.WithFields(logrus.Fields{
-							"fromTCP":  c.RemoteAddr().String(),
-							"id":       q.Id,
-							"question": q.Question,
-						})
-
-						rRaw := d.handleClientRawDNS(q, qRaw.B, requestLogger)
+						rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
 						if rRaw == nil {
 							return // ignore it, result is empty
 						}
@@ -130,29 +117,17 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				continue
 			}
 
-			if bk.aquire() == false { // too many concurrent queries
-				continue // drop it
+			q := new(dns.Msg)
+			err = q.Unpack(readBuf.B[:n])
+			if err != nil {
+				continue
 			}
 
 			// copy it to a new and maybe smaller buf for the new goroutine
 			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf.B[:n])
+			requestLogger := getRequestLogger(d.entry.Logger, from.String(), q.Id, q.Question, "udp")
 			go func() {
-				defer bufpool.ReleaseMsgBuf(qRaw)
-				defer bk.release()
-
-				q := new(dns.Msg)
-				err = q.Unpack(qRaw.B)
-				if err != nil {
-					return
-				}
-
-				requestLogger := d.entry.WithFields(logrus.Fields{
-					"fromUDP":  from.String(),
-					"id":       q.Id,
-					"question": q.Question,
-				})
-
-				rRaw := d.handleClientRawDNS(q, qRaw.B, requestLogger)
+				rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
 				if rRaw == nil {
 					return
 				}
@@ -199,8 +174,22 @@ func (b *bucket) release() {
 	defer b.Unlock()
 
 	if b.i < 0 {
-		panic("nagetive num in bucket ")
+		panic("nagetive num in bucket")
 	}
 
 	b.i--
+}
+
+func getRequestLogger(logger *logrus.Logger, from, id, question, protocol interface{}) *logrus.Entry {
+	f := make(logrus.Fields, 3+4) // Default is three fields
+	f["from"] = from
+	f["id"] = id
+	f["question"] = question
+	f["protocol"] = protocol
+	e := &logrus.Entry{
+		Logger: logger,
+		Data:   f,
+	}
+
+	return e
 }

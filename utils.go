@@ -42,7 +42,10 @@ func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n in
 	n1, err := io.ReadFull(c, lengthRaw.B)
 	n = n + n1
 	if err != nil {
-		return nil, unknownBrokenDataSize, n, err
+		if n1 != 0 {
+			return nil, unknownBrokenDataSize, n, err
+		}
+		return nil, 0, n, err
 	}
 
 	// dns headerSize

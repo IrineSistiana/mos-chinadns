@@ -185,12 +185,7 @@ type fakeUpstream struct {
 	ip      net.IP
 }
 
-func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, rtt time.Duration, err error) {
-	t := time.Now()
-	rRaw, err = u.exchange(ctx, qRaw, entry)
-	return rRaw, time.Since(t), err
-}
-func (u *fakeUpstream) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
+func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
 
 	q := new(dns.Msg)
 	err = q.Unpack(qRaw)

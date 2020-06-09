@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	defaultAllocator = NewAllocator()
+	defaultAllocator = newAllocator()
 )
 
 type Allocator struct {
@@ -36,10 +36,10 @@ type MsgBuf struct {
 	B []byte
 }
 
-// NewAllocator initiates a []byte allocator for dns.Msg less than 65536 bytes,
+// newAllocator initiates a []byte allocator for dns.Msg less than 65536 bytes,
 // the waste(memory fragmentation) of space allocation is guaranteed to be
 // no more than 50%.
-func NewAllocator() *Allocator {
+func newAllocator() *Allocator {
 	alloc := new(Allocator)
 	alloc.buffers = make([]sync.Pool, 17) // 1B -> 64K
 	for k := range alloc.buffers {
@@ -66,10 +66,6 @@ func AcquireMsgBufAndCopy(src []byte) *MsgBuf {
 
 func ReleaseMsgBuf(buf *MsgBuf) {
 	defaultAllocator.put(buf)
-}
-
-func MsgBufCanShrink(buf *MsgBuf) (ok bool) {
-	return cap(buf.B)>>1 >= len(buf.B)
 }
 
 // get a *MsgBuf from pool with most appropriate cap
