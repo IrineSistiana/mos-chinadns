@@ -30,11 +30,6 @@ server:
             # e.g. "https://223.5.5.5/dns-query?arg1=value1&arg2=value2"
             url: "https://223.5.5.5/dns-query" 
 
-            # 是否使用由fasthttp库提供的HTTP客户端
-            # 默认`false`将使用net/http库的HTTP客户端
-            # 根据fasthttp官方文档，其HTTP客户端是net/http的10倍, 但不支持HTTP/2
-            fasthttp: false 
-
         deny_unusual_types: false # 是否屏蔽不常见(包含多个Question、非A和AAAA)请求：
         deny_results_without_ip: false  # 是否屏蔽没有IP的A和AAAA应答
         check_cname: false # 域名策略(见下)是否也检查返回应答中的CNAME记录(CNAME深度检查)
@@ -92,7 +87,6 @@ server:
             idle_timeout: 10
         doh:
             url: "https://cloudflare-dns.com/dns-query"
-            fasthttp: false
 
         # 延时启动时间 单位: 毫秒 
         # 如果在设定时间后本地服务器无应答，则开始请求远程服务器
