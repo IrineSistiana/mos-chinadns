@@ -175,7 +175,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 			return nil, err
 		}
 
-		dc = newDNSConn(c)
+		dc = newDNSConn(c, time.Now())
 
 		isNewConn = true
 		// dialNewConn might take some time, check if ctx is done
@@ -291,12 +291,12 @@ type dnsConn struct {
 	lastIO    time.Time
 }
 
-func newDNSConn(c net.Conn) *dnsConn {
+func newDNSConn(c net.Conn, lastIO time.Time) *dnsConn {
 	return &dnsConn{
 		Conn:      c,
 		frameleft: 0,
 		msgID:     dns.Id(),
-		lastIO:    time.Now(),
+		lastIO:    lastIO,
 	}
 }
 
@@ -312,11 +312,11 @@ func newConnPool(size int, ttl, gcInterval time.Duration) *connPool {
 
 // runCleanner must run under lock
 func (p *connPool) runCleanner(force bool) {
-	if p == nil && len(p.pool) == 0 {
+	if p.disabled() || len(p.pool) == 0 {
 		return
 	}
 
-	//scheduled for forced
+	//scheduled or forced
 	if force || time.Since(p.lastClean) > p.cleannerInterval {
 		p.lastClean = time.Now()
 		res := p.pool[:0]
@@ -341,6 +341,7 @@ func (p *connPool) runCleanner(force bool) {
 			if i < mid {
 				p.pool[i].Conn.Close()
 				p.pool[i] = nil
+				continue
 			}
 
 			//then remove expired conns
@@ -360,7 +361,7 @@ func (p *connPool) put(dc *dnsConn) {
 		return
 	}
 
-	if p == nil || p.maxSize <= 0 || p.ttl <= 0 || dc.frameleft == unknownBrokenDataSize {
+	if p.disabled() || dc.frameleft == unknownBrokenDataSize {
 		dc.Conn.Close()
 		return
 	}
@@ -378,10 +379,7 @@ func (p *connPool) put(dc *dnsConn) {
 }
 
 func (p *connPool) get() (dc *dnsConn) {
-	if p == nil {
-		return nil
-	}
-	if p.maxSize <= 0 || p.ttl <= 0 {
+	if p.disabled() {
 		return nil
 	}
 
@@ -405,6 +403,10 @@ func (p *connPool) get() (dc *dnsConn) {
 		return dc
 	}
 	return nil
+}
+
+func (p *connPool) disabled() bool {
+	return p == nil || p.maxSize <= 0 || p.ttl <= 0
 }
 
 const (

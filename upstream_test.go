@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mos-chinadns/bufpool"
-
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 )
@@ -194,6 +193,51 @@ func Test_upstream(t *testing.T) {
 	}()
 
 	// TODO add tests for DoH
+}
+
+func Test_connPool(t *testing.T) {
+	conn, _ := net.Pipe()
+
+	// nil
+	var cp *connPool
+	cp.put(newDNSConn(conn, time.Now())) // do nothing
+	if c := cp.get(); c != nil {
+		t.Fatal("cp should be empty")
+	}
+	// zero size
+	cp = newConnPool(0, time.Second, time.Second)
+	cp.put(newDNSConn(conn, time.Now())) // do nothing
+	if len(cp.pool) != 0 {
+		t.Fatal("cp should be empty")
+	}
+	if c := cp.get(); c != nil {
+		t.Fatal("cp should be empty")
+	}
+
+	cp = newConnPool(8, time.Millisecond*250, time.Second*30) // dont run cleaner in schedule
+	for i := 0; i < 8; i++ {
+		cp.put(newDNSConn(conn, time.Now()))
+	}
+	if len(cp.pool) != 8 {
+		t.Fatal("cp should have 8 elems")
+	}
+	cp.put(newDNSConn(conn, time.Now())) // if cp is full, it will remove half of its elems and add this
+	if len(cp.pool) != 5 {
+		t.Fatalf("cp should have 5 elems, but got %d", len(cp.pool))
+	}
+	if c := cp.get(); c == nil {
+		t.Fatal("cp should return a old conn")
+	}
+	if len(cp.pool) != 4 {
+		t.Fatalf("cp should have 4 elems, but got %d", len(cp.pool))
+	}
+	time.Sleep(time.Millisecond * 500) // all elems are expired now.
+	if c := cp.get(); c != nil {       // remove all expired elems
+		t.Fatal("cp should be emtpy")
+	}
+	if len(cp.pool) != 0 { // all expired elems are removed
+		t.Fatalf("cp should have 0 elems, but got %d", len(cp.pool))
+	}
 }
 
 func generateCertificate() (cert tls.Certificate, err error) {
