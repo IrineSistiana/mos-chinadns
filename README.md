@@ -11,7 +11,6 @@
 * [IrineSistiana/net-list](https://github.com/IrineSistiana/net-list): [GPLv3](https://github.com/IrineSistiana/net-list/blob/master/LICENSE)
 * [sirupsen/logrus](https://github.com/sirupsen/logrus): [MIT](https://github.com/sirupsen/logrus/blob/master/LICENSE)
 * [miekg/dns](https://github.com/miekg/dns): [LICENSE](https://github.com/miekg/dns/blob/master/LICENSE)
-* [valyala/fasthttp](https://github.com/valyala/fasthttp): [MIT](https://github.com/valyala/fasthttp/blob/master/LICENSE)
 * [go-yaml/yaml](https://github.com/go-yaml/yaml): [Apache License 2.0](https://github.com/go-yaml/yaml/blob/v2/LICENSE)
 
 资源

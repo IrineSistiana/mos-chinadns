@@ -1,13 +1,6 @@
 # github.com/IrineSistiana/net-list v0.0.0-20200505120622-ab9e4bc6249d
 ## explicit
 github.com/IrineSistiana/net-list
-# github.com/andybalholm/brotli v1.0.0
-github.com/andybalholm/brotli
-# github.com/klauspost/compress v1.10.6
-## explicit
-github.com/klauspost/compress/flate
-github.com/klauspost/compress/gzip
-github.com/klauspost/compress/zlib
 # github.com/konsorten/go-windows-terminal-sequences v1.0.3
 github.com/konsorten/go-windows-terminal-sequences
 # github.com/miekg/dns v0.0.0-20200410192001-67373879ce32
@@ -16,13 +9,6 @@ github.com/miekg/dns
 # github.com/sirupsen/logrus v1.6.0
 ## explicit
 github.com/sirupsen/logrus
-# github.com/valyala/bytebufferpool v1.0.0
-github.com/valyala/bytebufferpool
-# github.com/valyala/fasthttp v1.13.1
-## explicit
-github.com/valyala/fasthttp
-github.com/valyala/fasthttp/fasthttputil
-github.com/valyala/fasthttp/stackless
 # golang.org/x/crypto v0.0.0-20200510223506-06a226fb4e37
 ## explicit
 golang.org/x/crypto/ed25519
