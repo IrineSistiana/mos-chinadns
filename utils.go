@@ -19,7 +19,6 @@ package main
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
 
 	"github.com/IrineSistiana/mos-chinadns/bufpool"
@@ -71,10 +70,11 @@ func writeMsgToTCP(c io.Writer, m []byte) (n int, err error) {
 	binary.BigEndian.PutUint16(l.B, uint16(len(m)))
 	copy(l.B[2:], m)
 	n, err = c.Write(l.B)
-	if n != 0 && n < len(l.B) {
-		return n, fmt.Errorf("%v: %v", io.ErrShortWrite, err)
+	n = n - 2
+	if n < 0 {
+		n = 0
 	}
-	return 0, err
+	return n, err
 }
 
 func writeMsgToUDP(c io.Writer, m []byte) (n int, err error) {

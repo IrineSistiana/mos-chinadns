@@ -234,6 +234,9 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 	if n > 0 {
 		dc.lastIO = time.Now()
 	}
+	if n != len(qRawCopy.B) {
+		err = fmt.Errorf("writeMsg: broken write: %v", err)
+	}
 	if err != nil {
 		goto ioErr
 	}
