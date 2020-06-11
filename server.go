@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	serverTimeout = time.Second * 3
+	serverTimeout = time.Second * 30
 )
 
 func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error {

@@ -42,11 +42,11 @@ import (
 )
 
 const (
-	tlsHandshakeTimeout = time.Second * 3
-	dialTCPTimeout      = time.Second * 2
-	dialUDPTimeout      = time.Second * 2
-	generalIOTimeout    = time.Second * 1
-	dohIOTimeout        = time.Second * 5
+	tlsHandshakeTimeout = time.Second * 15
+	dialTCPTimeout      = time.Second * 10
+	dialUDPTimeout      = time.Second * 10
+	generalIOTimeout    = time.Second * 3
+	dohIOTimeout        = time.Second * 15
 )
 
 var (
