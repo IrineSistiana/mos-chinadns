@@ -42,7 +42,7 @@ import (
 )
 
 const (
-	tlsHandshakeTimeout = time.Second * 15
+	tlsHandshakeTimeout = time.Second * 10
 	dialTCPTimeout      = time.Second * 10
 	dialUDPTimeout      = time.Second * 10
 	generalIOTimeout    = time.Second * 3
@@ -476,10 +476,9 @@ func newDoHUpstream(urlStr string, dialContext func(ctx context.Context, network
 	transport := &http.Transport{
 		DialContext:           dialContext,
 		TLSClientConfig:       tlsConfig,
-		IdleConnTimeout:       time.Minute,
-		ResponseHeaderTimeout: time.Second * 5,
-		MaxIdleConns:          100,
 		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
 
