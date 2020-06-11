@@ -109,7 +109,26 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 	}
 
 	qRawBuf := bufpool.AcquireMsgBufAndCopy(qRaw)
-	d, err := initBenchDispatherAndServer(qRaw)
+
+	r := new(dns.Msg)
+	r.SetReply(q)
+	var rr dns.RR
+	hdr := dns.RR_Header{
+		Name:     q.Question[0].Name,
+		Class:    dns.ClassINET,
+		Ttl:      300,
+		Rdlength: 0,
+	}
+	hdr.Rrtype = dns.TypeA
+
+	rr = &dns.A{Hdr: hdr, A: net.IPv4(222, 222, 222, 222)}
+	r.Answer = append(r.Answer, rr)
+	rRawBytes, err := r.Pack()
+	if err != nil {
+		b.Fatalf("[%s] Pack, %v", testID, err)
+	}
+
+	d, err := initBenchDispatherAndServer(rRawBytes)
 	if err != nil {
 		b.Fatalf("[%s] init dispatcher, %v", testID, err)
 	}
@@ -223,7 +242,15 @@ func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.
 }
 
 func initBenchDispatherAndServer(rRaw []byte) (*dispatcher, error) {
-	return initDispatherAndServer(0, 0, nil, nil, nil, nil, rRaw)
+	ipPo, err := newIPPolicies("accept:./chn.list|deny_all", logrus.NewEntry(logrus.StandardLogger()))
+	if err != nil {
+		return nil, fmt.Errorf("loading ip policies, %w", err)
+	}
+	doPo, err := newDomainPolicies("force:./chn_domain.list", logrus.NewEntry(logrus.StandardLogger()))
+	if err != nil {
+		return nil, fmt.Errorf("loading domain policies, %w", err)
+	}
+	return initDispatherAndServer(0, 0, nil, nil, ipPo, doPo, rRaw)
 }
 func initTestDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) (*dispatcher, error) {
 	return initDispatherAndServer(lLatency, rLatency, lIP, rIP, ipPo, doPo, nil)
