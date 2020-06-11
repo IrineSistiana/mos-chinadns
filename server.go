@@ -73,7 +73,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						continue
 					}
 
-					requestLogger := getRequestLogger(d.entry.Logger, c.RemoteAddr().String(), q.Id, q.Question, "tcp")
+					requestLogger := getRequestLogger(d.entry.Logger, c.RemoteAddr(), q.Id, q.Question, "tcp")
 					go func() {
 						rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
 						if rRaw == nil {
@@ -125,7 +125,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 
 			// copy it to a new and maybe smaller buf for the new goroutine
 			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf.B[:n])
-			requestLogger := getRequestLogger(d.entry.Logger, from.String(), q.Id, q.Question, "udp")
+			requestLogger := getRequestLogger(d.entry.Logger, from, q.Id, q.Question, "udp")
 			go func() {
 				rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
 				if rRaw == nil {
@@ -180,7 +180,7 @@ func (b *bucket) release() {
 	b.i--
 }
 
-func getRequestLogger(logger *logrus.Logger, from, id, question, protocol interface{}) *logrus.Entry {
+func getRequestLogger(logger *logrus.Logger, from net.Addr, id uint16, question []dns.Question, protocol string) *logrus.Entry {
 	f := make(logrus.Fields, 3+4) // Default is three fields
 	f["from"] = from
 	f["id"] = id

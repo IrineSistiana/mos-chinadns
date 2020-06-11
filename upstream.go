@@ -46,7 +46,7 @@ const (
 	dialTCPTimeout      = time.Second * 2
 	dialUDPTimeout      = time.Second * 2
 	generalIOTimeout    = time.Second * 1
-	dotIOTimeout        = time.Second * 5
+	dohIOTimeout        = time.Second * 5
 )
 
 var (
@@ -162,7 +162,7 @@ func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 
 		upstream, err = newDoHUpstream(sc.DoH.URL, dialContext, tlsConf)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to init DoH upstream: %v", err)
 		}
 	default:
 		return nil, fmt.Errorf("unsupport protocol: %s", sc.Protocol)
@@ -458,7 +458,7 @@ func newDoHUpstream(urlStr string, dialContext func(ctx context.Context, network
 	// check urlStr
 	u, err := url.ParseRequestURI(urlStr)
 	if err != nil {
-		return nil, fmt.Errorf("url.ParseRequestURI: %w", err)
+		return nil, fmt.Errorf("invalid url: %w", err)
 	}
 
 	if u.Scheme != "https" {
@@ -500,7 +500,7 @@ func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte, requestLogger *lo
 		return nil, dns.ErrShortRead // avoid panic when access msg id in m[0] and m[1]
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), dotIOTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), dohIOTimeout)
 	defer cancel()
 	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
 	defer bufpool.ReleaseMsgBuf(qRawCopy)
@@ -540,24 +540,24 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string, requestLogger *log
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("NewRequestWithContext: %w", err)
+		return nil, fmt.Errorf("interal err: NewRequestWithContext: %w", err)
 	}
 	req.Header["Accept"] = []string{"application/dns-message"}
 
 	resp, err := u.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Do: %w", err)
+		return nil, fmt.Errorf("http request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// check Content-Length
 	if resp.ContentLength > dns.MaxMsgSize {
-		return nil, fmt.Errorf("ContentLength is too big [%d]", resp.ContentLength)
+		return nil, fmt.Errorf("ContentLength %d is bigger than dns.MaxMsgSize", resp.ContentLength)
 	}
 
 	// check statu code
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP status codes [%d]", resp.StatusCode)
+		return nil, fmt.Errorf("bad http status codes %d", resp.StatusCode)
 	}
 
 	buf := bufpool.AcquireBytesBuf()
@@ -565,7 +565,10 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string, requestLogger *log
 	_, err = buf.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize))
 
 	if err != nil {
-		return nil, fmt.Errorf("Response body is too large: %w", err)
+		if err == io.EOF {
+			return nil, fmt.Errorf("response body is too large: buf.ReadFrom(): %w", err)
+		}
+		return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
 	}
 	body := buf.Bytes()
 

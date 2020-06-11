@@ -72,7 +72,7 @@ func main() {
 		logger.SetLevel(logrus.DebugLevel)
 		// dev only
 		// go http.ListenAndServe("localhost:8080", nil)
-		go printStatus(entry, time.Second*5)
+		go printStatus(entry, time.Second*30)
 	default:
 		logger.SetLevel(logrus.InfoLevel)
 	}
