@@ -256,7 +256,8 @@ func (d *dispatcher) handleClientRawDNS(ctx context.Context, q *dns.Msg, qRawBuf
 		requestLogger.Warnf("handleClientRawDNS: serveRawDNS: %v", err)
 		if err == errServerFailed {
 			// tell the client that server is failed
-			r := new(dns.Msg)
+			r := getMsg()
+			defer releaseMsg(r)
 			r.SetReply(q)
 			r.Rcode = dns.RcodeServerFailure
 			buf := bufpool.AcquirePackBuf()
@@ -491,8 +492,9 @@ func (d *dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 		serveDNSWG.Wait()
 
 		// time to finial cleanup
-		releaseRequestLogger(requestLogger)
+		releaseMsg(q)
 		bufpool.ReleaseMsgBuf(qRawBuf)
+		releaseRequestLogger(requestLogger)
 		releaseResChan(resChan)
 		releaseNotificationChan(upstreamFailedNotificationChan)
 		if localNotificationChan != nil {
@@ -677,7 +679,8 @@ func (d *dispatcher) acceptLocalRes(res *dns.Msg, requestLogger *logrus.Entry) (
 
 // check if local result is ok to accept, res can be nil.
 func (d *dispatcher) acceptRawLocalRes(rRaw []byte, requestLogger *logrus.Entry) (ok bool) {
-	res := new(dns.Msg)
+	res := getMsg()
+	defer releaseMsg(res)
 	err := res.Unpack(rRaw)
 	if err != nil {
 		requestLogger.Debugf("acceptRawLocalRes: false, Unpack: %v", err)

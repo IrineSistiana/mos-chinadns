@@ -108,8 +108,6 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 		b.Fatalf("[%s] q.Pack: %v", testID, err)
 	}
 
-	qRawBuf := bufpool.AcquireMsgBufAndCopy(qRaw)
-
 	r := new(dns.Msg)
 	r.SetReply(q)
 	var rr dns.RR
@@ -137,7 +135,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 	switch mode {
 	case benchFlow:
 		for i := 0; i < b.N; i++ {
-			_, err := d.serveRawDNS(context.Background(), q, qRawBuf, getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
+			_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -151,7 +149,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					_, err := d.serveRawDNS(context.Background(), q, qRawBuf, getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
+					_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
 					if err != nil {
 						atomic.AddInt32(&ec, 1)
 						// panic("err")
@@ -167,7 +165,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 		var ec int32
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_, err := d.serveRawDNS(context.Background(), q, qRawBuf, getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
+				_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
 				if err != nil {
 					atomic.AddInt32(&ec, 1)
 				}

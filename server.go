@@ -69,10 +69,11 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						return
 					}
 
-					q := new(dns.Msg)
+					q := getMsg()
 					err = q.Unpack(qRaw.B)
 					if err != nil { // invalid msg, drop it
 						bufpool.ReleaseMsgBuf(qRaw)
+						releaseMsg(q)
 						continue
 					}
 
@@ -121,9 +122,10 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				continue
 			}
 
-			q := new(dns.Msg)
+			q := getMsg()
 			err = q.Unpack(readBuf.B[:n])
 			if err != nil {
+				releaseMsg(q)
 				continue
 			}
 
