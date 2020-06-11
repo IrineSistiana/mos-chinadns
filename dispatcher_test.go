@@ -102,7 +102,14 @@ const (
 )
 
 func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) {
-	d, err := initTestDispatherAndServer(time.Duration(ll)*time.Millisecond, time.Duration(rl)*time.Millisecond, lIP, rIP, ipPo, doPo)
+	q := new(dns.Msg).SetQuestion(dns.Fqdn(domain), dns.TypeA)
+	qRaw, err := q.Pack()
+	if err != nil {
+		b.Fatalf("[%s] q.Pack: %v", testID, err)
+	}
+
+	qRawBuf := bufpool.AcquireMsgBufAndCopy(qRaw)
+	d, err := initBenchDispatherAndServer(qRaw)
 	if err != nil {
 		b.Fatalf("[%s] init dispatcher, %v", testID, err)
 	}
@@ -111,7 +118,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 	switch mode {
 	case benchFlow:
 		for i := 0; i < b.N; i++ {
-			_, err := d.serveDNS(context.Background(), new(dns.Msg).SetQuestion(dns.Fqdn(domain), dns.TypeA), d.entry)
+			_, err := d.serveRawDNS(context.Background(), q, qRawBuf, d.entry)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -125,9 +132,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					q := new(dns.Msg)
-					q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-					_, err := d.serveDNS(context.Background(), q, d.entry)
+					_, err := d.serveRawDNS(context.Background(), q, qRawBuf, d.entry)
 					if err != nil {
 						atomic.AddInt32(&ec, 1)
 						// panic("err")
@@ -143,9 +148,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 		var ec int32
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				q := new(dns.Msg)
-				q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-				_, err := d.serveDNS(context.Background(), q, d.entry)
+				_, err := d.serveRawDNS(context.Background(), q, qRawBuf, d.entry)
 				if err != nil {
 					atomic.AddInt32(&ec, 1)
 				}
@@ -183,9 +186,13 @@ func Benchmark_dispatcher_concurrent_cpu_thread(b *testing.B) {
 type fakeUpstream struct {
 	latency time.Duration
 	ip      net.IP
+	rRaw    []byte
 }
 
 func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
+	if u.rRaw != nil {
+		return bufpool.AcquireMsgBufAndCopy(u.rRaw), nil
+	}
 
 	q := new(dns.Msg)
 	err = q.Unpack(qRaw)
@@ -215,7 +222,13 @@ func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.
 	return bufpool.AcquireMsgBufAndCopy(rRawBytes), err
 }
 
+func initBenchDispatherAndServer(rRaw []byte) (*dispatcher, error) {
+	return initDispatherAndServer(0, 0, nil, nil, nil, nil, rRaw)
+}
 func initTestDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) (*dispatcher, error) {
+	return initDispatherAndServer(lLatency, rLatency, lIP, rIP, ipPo, doPo, nil)
+}
+func initDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies, rRaw []byte) (*dispatcher, error) {
 	c := Config{}
 
 	// just set the vaule for initDispatcher() inner checks, we will hijeck the upstream later.
@@ -234,8 +247,8 @@ func initTestDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.I
 	d.local.ipPolicies = ipPo
 	d.local.domainPolicies = doPo
 
-	d.local.client = &fakeUpstream{latency: lLatency, ip: lIP}
-	d.remote.client = &fakeUpstream{latency: rLatency, ip: rIP}
+	d.local.client = &fakeUpstream{latency: lLatency, ip: lIP, rRaw: rRaw}
+	d.remote.client = &fakeUpstream{latency: rLatency, ip: rIP, rRaw: rRaw}
 
 	return d, nil
 }
