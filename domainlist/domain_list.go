@@ -55,9 +55,23 @@ func (l *List) Add(fqdn string) {
 }
 
 func (l *List) Has(fqdn string) bool {
-	e := dns.Split(fqdn)
-	for i := range e {
-		p := e[len(e)-1-i]
+	if fqdn == "." {
+		return false
+	}
+	idx := make([]int, 1, 6)
+	off := 0
+	end := false
+
+	for {
+		off, end = dns.NextLabel(fqdn, off)
+		if end {
+			break
+		}
+		idx = append(idx, off)
+	}
+
+	for i := range idx {
+		p := idx[len(idx)-1-i]
 		if l.has(fqdn[p:]) {
 			return true
 		}
