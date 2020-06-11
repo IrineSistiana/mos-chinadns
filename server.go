@@ -87,7 +87,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						c.SetWriteDeadline(time.Now().Add(serverTimeout))
 						_, err = writeMsgToTCP(c, rRaw.B)
 						if err != nil {
-							requestLogger.Warnf("ListenAndServe: writeMsgToTCP: %v", err)
+							d.entry.Warnf("ListenAndServe: writeMsgToTCP: %v", err)
 						}
 					}()
 
@@ -140,7 +140,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				l.SetWriteDeadline(time.Now().Add(serverTimeout))
 				_, err = l.WriteTo(rRaw.B, from)
 				if err != nil {
-					requestLogger.Warnf("ListenAndServe: WriteTo: %v", err)
+					d.entry.Warnf("ListenAndServe: WriteTo: %v", err)
 				}
 			}()
 		}
@@ -184,16 +184,37 @@ func (b *bucket) release() {
 	b.i--
 }
 
+var requestLoggerPool = sync.Pool{
+	New: func() interface{} {
+		f := make(logrus.Fields, 3+4) // default is three fields, we add 4 more
+		f["from"] = nil
+		f["id"] = nil
+		f["question"] = nil
+		f["protocol"] = nil
+		e := &logrus.Entry{
+			Data: f,
+		}
+		return e
+	},
+}
+
 func getRequestLogger(logger *logrus.Logger, from net.Addr, id uint16, question []dns.Question, protocol string) *logrus.Entry {
-	f := make(logrus.Fields, 3+4) // Default is three fields
+	entry := requestLoggerPool.Get().(*logrus.Entry)
+	f := entry.Data
 	f["from"] = from
 	f["id"] = id
 	f["question"] = question
 	f["protocol"] = protocol
-	e := &logrus.Entry{
-		Logger: logger,
-		Data:   f,
-	}
+	entry.Logger = logger
+	return entry
+}
 
-	return e
+func releaseRequestLogger(entry *logrus.Entry) {
+	f := entry.Data
+	f["from"] = nil
+	f["id"] = nil
+	f["question"] = nil
+	f["protocol"] = nil
+	entry.Logger = nil
+	requestLoggerPool.Put(entry)
 }

@@ -49,7 +49,7 @@ func Test_dispatcher(t *testing.T) {
 
 		q := new(dns.Msg)
 		q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-		r, err := d.serveDNS(context.Background(), q, d.entry)
+		r, err := d.serveDNS(context.Background(), q, getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -118,7 +118,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 	switch mode {
 	case benchFlow:
 		for i := 0; i < b.N; i++ {
-			_, err := d.serveRawDNS(context.Background(), q, qRawBuf, d.entry)
+			_, err := d.serveRawDNS(context.Background(), q, qRawBuf, getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -132,7 +132,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					_, err := d.serveRawDNS(context.Background(), q, qRawBuf, d.entry)
+					_, err := d.serveRawDNS(context.Background(), q, qRawBuf, getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
 					if err != nil {
 						atomic.AddInt32(&ec, 1)
 						// panic("err")
@@ -148,7 +148,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 		var ec int32
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_, err := d.serveRawDNS(context.Background(), q, qRawBuf, d.entry)
+				_, err := d.serveRawDNS(context.Background(), q, qRawBuf, getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
 				if err != nil {
 					atomic.AddInt32(&ec, 1)
 				}
