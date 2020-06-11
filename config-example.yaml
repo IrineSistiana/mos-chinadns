@@ -13,14 +13,18 @@ server:
     local:
         addr: "223.5.5.5:53" # 服务器地址。留空将禁用该服务器
         protocol: "udp" # 服务器协议。`tcp`|`udp`|`doh`|`dot`其中之一。留空默认`udp`
-       
+        
+        # socks5代理服务器地址，仅`protocol`为`tcp`|`doh`|`dot`时有用
+        # 目前不支持udp协议，不支持认证
+        socks5: "" 
+
         # TCP设定，仅`protocol`为`tcp`时有用
         tcp:
             idle_timeout: 10 # 空连接超时时间。单位: 秒。0表示禁用连接重用
 
         # DoT设定，仅`protocol`为`dot`有用
         dot: 
-            server_name: "dns.alidns.com" # [必需]服务器的域名/证书名 
+            server_name: "dns.alidns.com" # [必需] 服务器的域名/证书名 
             idle_timeout: 10 # 空连接超时时间。单位: 秒。0表示禁用连接重用
 
         # DoH设定，仅`protocol`为`doh`有用
@@ -80,6 +84,7 @@ server:
         # 以下部分说明与 local 相同，参见上文
         addr: "1.0.0.1:853"
         protocol: "dot" 
+        socks5: "" 
         tcp:
             idle_timeout: 10
         dot:

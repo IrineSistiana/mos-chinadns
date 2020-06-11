@@ -38,6 +38,7 @@ import (
 	"github.com/IrineSistiana/mos-chinadns/bufpool"
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -58,7 +59,6 @@ type upstream interface {
 
 // upstreamCommon represents a udp/tcp/tls server
 type upstreamCommon struct {
-	addr        string
 	dialNewConn func() (net.Conn, error)
 	writeMsg    func(c io.Writer, msg []byte) (int, error)
 	readMsg     func(c io.Reader) (msg *bufpool.MsgBuf, brokenDataLeft int, n int, err error)
@@ -78,32 +78,40 @@ func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 	}
 
 	var upstream upstream
-	var err error
 	switch sc.Protocol {
 	case "udp", "":
 		dialUDP := func() (net.Conn, error) {
 			return net.DialTimeout("udp", sc.Addr, dialUDPTimeout)
 		}
 		upstream = &upstreamCommon{
-			addr:        sc.Addr,
 			dialNewConn: dialUDP,
 			readMsg:     readMsgFromUDP,
 			writeMsg:    writeMsgToUDP,
 			cp:          newConnPool(0xffff, time.Second*10, time.Second*5),
 		}
 	case "tcp":
-		idleTimeout := time.Duration(sc.TCP.IdleTimeout) * time.Second
-		dialTCP := func() (net.Conn, error) {
-			return net.DialTimeout("tcp", sc.Addr, dialTCPTimeout)
+		dialTCP, err := getUpstreamDialTCPFunc("tcp", sc.Addr, sc.Socks5, dialTCPTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to init dialer: %v", err)
 		}
+
+		idleTimeout := time.Duration(sc.TCP.IdleTimeout) * time.Second
 		upstream = &upstreamCommon{
-			addr:        sc.Addr,
 			dialNewConn: dialTCP,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
 			cp:          newConnPool(0xffff, idleTimeout, idleTimeout>>1),
 		}
 	case "dot":
+		if len(sc.DoT.ServerName) == 0 {
+			return nil, fmt.Errorf("protocol [%s] needs additional argument: server_name", sc.Protocol)
+		}
+
+		dialTCP, err := getUpstreamDialTCPFunc("tcp", sc.Addr, sc.Socks5, dialTCPTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to init dialer: %v", err)
+		}
+
 		tlsConf := &tls.Config{
 			ServerName:         sc.DoT.ServerName,
 			RootCAs:            rootCAs,
@@ -112,32 +120,34 @@ func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 			// for test only
 			InsecureSkipVerify: sc.insecureSkipVerify,
 		}
-
-		idleTimeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
 		dialTLS := func() (net.Conn, error) {
-			c, err := net.DialTimeout("tcp", sc.Addr, dialTCPTimeout)
+			c, err := dialTCP()
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to dial tcp connection: %v", err)
 			}
 			tlsConn := tls.Client(c, tlsConf)
 			tlsConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
 			// try handshake first
 			if err := tlsConn.Handshake(); err != nil {
 				c.Close()
-				return nil, err
+				return nil, fmt.Errorf("failed to tls handshake: %v", err)
 			}
 			return tlsConn, nil
 		}
+		idleTimeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
 		upstream = &upstreamCommon{
-			addr:        sc.Addr,
 			dialNewConn: dialTLS,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
 			cp:          newConnPool(0xffff, idleTimeout, idleTimeout>>1),
 		}
 	case "doh":
+		if len(sc.DoH.URL) == 0 {
+			return nil, fmt.Errorf("protocol [%s] needs additional argument: url", sc.Protocol)
+		}
+
 		tlsConf := &tls.Config{
-			// don't have to set servername here, fasthttp will do it itself.
+			// don't have to set servername here, net.http will do it itself.
 			RootCAs:            rootCAs,
 			ClientSessionCache: tls.NewLRUClientSessionCache(64),
 
@@ -145,10 +155,12 @@ func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 			InsecureSkipVerify: sc.insecureSkipVerify,
 		}
 
-		if len(sc.DoH.URL) == 0 {
-			return nil, fmt.Errorf("protocol [%s] needs URL", sc.Protocol)
+		dialContext, err := getUpstreamDialContextFunc("tcp", sc.Addr, sc.Socks5)
+		if err != nil {
+			return nil, fmt.Errorf("failed to init dialContext: %v", err)
 		}
-		upstream, err = newDoHUpstream(sc.DoH.URL, sc.Addr, tlsConf)
+
+		upstream, err = newDoHUpstream(sc.DoH.URL, dialContext, tlsConf)
 		if err != nil {
 			return nil, err
 		}
@@ -442,7 +454,7 @@ type upstreamDoH struct {
 	client      *http.Client
 }
 
-func newDoHUpstream(urlStr, addr string, tlsConfig *tls.Config) (*upstreamDoH, error) {
+func newDoHUpstream(urlStr string, dialContext func(ctx context.Context, network, address string) (net.Conn, error), tlsConfig *tls.Config) (*upstreamDoH, error) {
 	// check urlStr
 	u, err := url.ParseRequestURI(urlStr)
 	if err != nil {
@@ -461,28 +473,20 @@ func newDoHUpstream(urlStr, addr string, tlsConfig *tls.Config) (*upstreamDoH, e
 		urlStr = urlStr + "&dns=" // the last arg
 	}
 
-	c := new(upstreamDoH)
-	c.preparedURL = []byte(urlStr)
-
-	tc := new(tls.Config)
-	if tlsConfig != nil {
-		tc = tlsConfig.Clone()
-	}
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			d := net.Dialer{}
-			return d.DialContext(ctx, network, addr)
-		},
-		TLSClientConfig:       tc,
+		DialContext:           dialContext,
+		TLSClientConfig:       tlsConfig,
 		IdleConnTimeout:       time.Minute,
 		ResponseHeaderTimeout: time.Second * 5,
+		MaxIdleConns:          100,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
 		ForceAttemptHTTP2:     true,
 	}
 
-	err = http2.ConfigureTransport(transport) // enable http2
-	if err != nil {
-		return nil, err
-	}
+	http2.ConfigureTransport(transport) // enable http2
+
+	c := new(upstreamDoH)
+	c.preparedURL = []byte(urlStr)
 	c.client = &http.Client{
 		Transport: transport,
 	}
@@ -571,4 +575,48 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string, requestLogger *log
 
 	rRaw := bufpool.AcquireMsgBufAndCopy(body)
 	return rRaw, nil
+}
+
+func getSocks5ContextDailer(network, sock5Address string) (proxy.ContextDialer, error) {
+	d, err := proxy.SOCKS5(network, sock5Address, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)
+	}
+	contextDialer, ok := d.(proxy.ContextDialer)
+	if !ok {
+		return nil, errors.New("internel err: socks5 dialer is not a proxy.ContextDialer")
+	}
+	return contextDialer, nil
+}
+
+func getUpstreamDialContextFunc(network, dstAddress, sock5Address string) (func(ctx context.Context, _, _ string) (net.Conn, error), error) {
+	if len(sock5Address) != 0 { // proxy through sock5
+		d, err := proxy.SOCKS5(network, sock5Address, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)
+		}
+		contextDialer, ok := d.(proxy.ContextDialer)
+		if !ok {
+			return nil, errors.New("internel err: socks5 dialer is not a proxy.ContextDialer")
+		}
+		return func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return contextDialer.DialContext(ctx, network, dstAddress)
+		}, nil
+	}
+	return func(ctx context.Context, _, _ string) (net.Conn, error) {
+		d := net.Dialer{}
+		return d.DialContext(ctx, network, dstAddress)
+	}, nil
+}
+
+func getUpstreamDialTCPFunc(network, dstAddress, sock5Address string, timeout time.Duration) (func() (net.Conn, error), error) {
+	d, err := getUpstreamDialContextFunc(network, dstAddress, sock5Address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upstream dialTCP func: %v", err)
+	}
+	return func() (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		return d(ctx, "", "")
+	}, nil
 }

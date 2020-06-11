@@ -182,6 +182,7 @@ func Test_upstream(t *testing.T) {
 			insecureSkipVerify: true,
 		}
 		sc.DoT.IdleTimeout = 10
+		sc.DoT.ServerName = "example.com"
 		upstreamDot, err := newUpstream(sc, 100, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -193,6 +194,14 @@ func Test_upstream(t *testing.T) {
 	}()
 
 	// TODO add tests for DoH
+}
+
+// This test tests if proxy.SOCKS5 still return a proxy.ContextDialer
+func Test_getUpstreamDialContextFunc(t *testing.T) {
+	_, err := getUpstreamDialContextFunc("tcp", "127.0.0.1:1081", "127.0.0.1:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func Test_connPool(t *testing.T) {

@@ -66,6 +66,7 @@ type Config struct {
 type BasicServerConfig struct {
 	Addr     string `yaml:"addr"`
 	Protocol string `yaml:"protocol"`
+	Socks5   string `yaml:"socks5"`
 
 	TCP struct {
 		IdleTimeout uint `yaml:"idle_timeout"`
