@@ -49,7 +49,7 @@ func Test_dispatcher(t *testing.T) {
 
 		q := new(dns.Msg)
 		q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-		r, err := d.serveDNS(q, d.entry)
+		r, err := d.serveDNS(context.Background(), q, d.entry)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -111,7 +111,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 	switch mode {
 	case benchFlow:
 		for i := 0; i < b.N; i++ {
-			_, err := d.serveDNS(new(dns.Msg).SetQuestion(dns.Fqdn(domain), dns.TypeA), d.entry)
+			_, err := d.serveDNS(context.Background(), new(dns.Msg).SetQuestion(dns.Fqdn(domain), dns.TypeA), d.entry)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -127,7 +127,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 					defer wg.Done()
 					q := new(dns.Msg)
 					q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-					_, err := d.serveDNS(q, d.entry)
+					_, err := d.serveDNS(context.Background(), q, d.entry)
 					if err != nil {
 						atomic.AddInt32(&ec, 1)
 						// panic("err")
@@ -145,7 +145,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 			for pb.Next() {
 				q := new(dns.Msg)
 				q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-				_, err := d.serveDNS(q, d.entry)
+				_, err := d.serveDNS(context.Background(), q, d.entry)
 				if err != nil {
 					atomic.AddInt32(&ec, 1)
 				}

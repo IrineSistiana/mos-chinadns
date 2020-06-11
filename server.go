@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -58,6 +59,8 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 
 			go func() {
 				defer c.Close()
+				tcpConnCtx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
 				for {
 					c.SetDeadline(time.Now().Add(serverTimeout))
@@ -75,7 +78,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 
 					requestLogger := getRequestLogger(d.entry.Logger, c.RemoteAddr(), q.Id, q.Question, "tcp")
 					go func() {
-						rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
+						rRaw := d.handleClientRawDNS(tcpConnCtx, q, qRaw, requestLogger)
 						if rRaw == nil {
 							return // ignore it, result is empty
 						}
@@ -127,7 +130,7 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf.B[:n])
 			requestLogger := getRequestLogger(d.entry.Logger, from, q.Id, q.Question, "udp")
 			go func() {
-				rRaw := d.handleClientRawDNS(q, qRaw, requestLogger)
+				rRaw := d.handleClientRawDNS(context.Background(), q, qRaw, requestLogger)
 				if rRaw == nil {
 					return
 				}
