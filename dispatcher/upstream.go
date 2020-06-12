@@ -15,7 +15,7 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package main
+package dispatcher
 
 import (
 	"context"
@@ -32,29 +32,26 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/utils"
 	"golang.org/x/net/http2"
 
-	"github.com/IrineSistiana/mos-chinadns/bufpool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 )
 
 const (
-	tlsHandshakeTimeout = time.Second * 10
-	dialTCPTimeout      = time.Second * 10
-	dialUDPTimeout      = time.Second * 10
-	generalIOTimeout    = time.Second * 3
-	dohIOTimeout        = time.Second * 15
+	tlsHandshakeTimeout = time.Second * 5
+	dialTCPTimeout      = time.Second * 5
+	dialUDPTimeout      = time.Second * 5
+	generalIOTimeout    = time.Second * 1
+	dohIOTimeout        = time.Second * 10
 )
 
-var (
-	errOperationAborted = errors.New("operation aborted")
-)
-
-type upstream interface {
-	Exchange(ctx context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, err error)
+// Upstream reprenses a dns upsteam
+type Upstream interface {
+	// Exchange sends qRaw to upstream and return its reply. For better preformence, release the rRaw.
+	Exchange(ctx context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error)
 }
 
 // upstreamCommon represents a udp/tcp/tls server
@@ -69,15 +66,18 @@ type upstreamCommon struct {
 // upstreamWithLimit represents server but has a concurrent limitation
 type upstreamWithLimit struct {
 	bk *bucket
-	u  upstream
+	u  Upstream
 }
 
-func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.CertPool) (upstream, error) {
+// NewUpstream inits a upstream instance base on the config.
+// maxConcurrentQueries limits the max concurrent queries for this upstream. 0 means disable the limit.
+// rootCAs will be used in dot/doh upstream in tls server verification.
+func NewUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.CertPool) (Upstream, error) {
 	if sc == nil {
 		return nil, errors.New("no server config")
 	}
 
-	var upstream upstream
+	var upstream Upstream
 	switch sc.Protocol {
 	case "udp", "":
 		dialUDP := func() (net.Conn, error) {
@@ -118,7 +118,7 @@ func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 			ClientSessionCache: tls.NewLRUClientSessionCache(64),
 
 			// for test only
-			InsecureSkipVerify: sc.insecureSkipVerify,
+			InsecureSkipVerify: sc.InsecureSkipVerify,
 		}
 		dialTLS := func() (net.Conn, error) {
 			c, err := dialTCP()
@@ -152,7 +152,7 @@ func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 			ClientSessionCache: tls.NewLRUClientSessionCache(64),
 
 			// for test only
-			InsecureSkipVerify: sc.insecureSkipVerify,
+			InsecureSkipVerify: sc.InsecureSkipVerify,
 		}
 
 		dialContext, err := getUpstreamDialContextFunc("tcp", sc.Addr, sc.Socks5)
@@ -167,29 +167,32 @@ func newUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 	default:
 		return nil, fmt.Errorf("unsupport protocol: %s", sc.Protocol)
 	}
-	limitedUpstream := &upstreamWithLimit{bk: newBucket(maxConcurrentQueries), u: upstream}
-	return limitedUpstream, nil
+	if maxConcurrentQueries > 0 {
+		limitedUpstream := &upstreamWithLimit{bk: newBucket(maxConcurrentQueries), u: upstream}
+		return limitedUpstream, nil
+	}
+	return upstream, nil
 }
 
 var (
 	errTooManyConcurrentQueries = errors.New("too many concurrent queries")
 )
 
-func (u *upstreamWithLimit) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
+func (u *upstreamWithLimit) Exchange(ctx context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
 	if u.bk.aquire() == false {
 		return nil, errTooManyConcurrentQueries
 	}
 	defer u.bk.release()
-	return u.u.Exchange(ctx, qRaw, entry)
+	return u.u.Exchange(ctx, qRaw)
 }
 
-func (u *upstreamCommon) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
-	return u.exchange(ctx, qRaw, entry, false)
+func (u *upstreamCommon) Exchange(ctx context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
+	return u.exchange(ctx, qRaw, false)
 }
 
-func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry, forceNewConn bool) (rRaw *bufpool.MsgBuf, err error) {
+func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn bool) (rRaw *bufpool.MsgBuf, err error) {
 	if err = ctx.Err(); err != nil {
-		return nil, errOperationAborted
+		return nil, err
 	}
 
 	if len(qRaw) < 12 {
@@ -213,7 +216,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, entry *logru
 		// dialNewConn might take some time, check if ctx is done
 		if err = ctx.Err(); err != nil {
 			u.cp.put(dc)
-			return nil, errOperationAborted
+			return nil, err
 		}
 	} else {
 		dc.msgID++
@@ -296,6 +299,7 @@ read:
 	return rRaw, nil
 
 ioErr:
+	ctxErr := queryCtx.Err()
 	// err caused by cancelled ctx, it's ok to reuse the connection
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 		if dc.frameleft == unknownBrokenDataSize {
@@ -304,17 +308,24 @@ ioErr:
 		}
 		once.Do(func() {}) // do nothing, just fire the once
 		u.cp.put(dc)
-		return nil, errOperationAborted
+		if ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, err
 	}
 
 	if isNewConn { // new connection shouldn't have any other type of err
 		dc.Close()
 		return nil, fmt.Errorf("new conn io err, %v", err)
 	}
+
+	// reused connection got an unexpected err
 	dc.Close()
-	// reused connection got an unexpected err, open a new conn and try again
-	entry.Warnf("exchange: reused conn io err: %v", err)
-	return u.exchange(ctx, qRaw, entry, true)
+	if ctxErr != nil {
+		return nil, err // return the true err instead ctx's err
+	}
+	// but ctx isn't done yet, open a new conn and try again
+	return u.exchange(ctx, qRaw, true)
 }
 
 type connPool struct {
@@ -497,7 +508,7 @@ func newDoHUpstream(urlStr string, dialContext func(ctx context.Context, network
 }
 
 //Exchange: dot upstream has its own context to control timeout, it will not follow the ctx.
-func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte, requestLogger *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
+func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
 	if len(qRaw) < 12 {
 		return nil, dns.ErrShortRead // avoid panic when access msg id in m[0] and m[1]
 	}
@@ -524,7 +535,7 @@ func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte, requestLogger *lo
 	encoder.Write(qRawCopy.B)
 	encoder.Close()
 
-	rRaw, err = u.doHTTP(ctx, urlBuilder.String(), requestLogger)
+	rRaw, err = u.doHTTP(ctx, urlBuilder.String())
 	if err != nil {
 		return nil, fmt.Errorf("doHTTP: %w", err)
 	}
@@ -538,7 +549,7 @@ func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte, requestLogger *lo
 	return rRaw, nil
 }
 
-func (u *upstreamDoH) doHTTP(ctx context.Context, url string, requestLogger *logrus.Entry) (*bufpool.MsgBuf, error) {
+func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*bufpool.MsgBuf, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

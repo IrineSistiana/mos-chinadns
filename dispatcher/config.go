@@ -15,7 +15,7 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package main
+package dispatcher
 
 import (
 	"io/ioutil"
@@ -63,6 +63,7 @@ type Config struct {
 	} `yaml:"ca"`
 }
 
+// BasicServerConfig is a basic config for a upstream dns server.
 type BasicServerConfig struct {
 	Addr     string `yaml:"addr"`
 	Protocol string `yaml:"protocol"`
@@ -81,13 +82,14 @@ type BasicServerConfig struct {
 		URL string `yaml:"url"`
 	} `yaml:"doh"`
 
-	// for test only
-	insecureSkipVerify bool
+	// for test and experts only
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify,omitempty"`
 }
 
-func loadConfig(configFile string) (*Config, error) {
+// LoadConfig loads a yaml config from path p.
+func LoadConfig(p string) (*Config, error) {
 	c := new(Config)
-	b, err := ioutil.ReadFile(configFile)
+	b, err := ioutil.ReadFile(p)
 	if err != nil {
 		return nil, err
 	}
@@ -99,10 +101,11 @@ func loadConfig(configFile string) (*Config, error) {
 	return c, nil
 }
 
-func genConfig(configFile string) error {
+// GenConfig generates a template config to path p.
+func GenConfig(p string) error {
 	c := new(Config)
 
-	f, err := os.Create(configFile)
+	f, err := os.Create(p)
 	if err != nil {
 		return err
 	}

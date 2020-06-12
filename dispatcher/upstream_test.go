@@ -15,7 +15,7 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package main
+package dispatcher
 
 import (
 	"context"
@@ -33,14 +33,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/bufpool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 )
 
 func Test_upstream(t *testing.T) {
 
-	testUpstream := func(name string, u upstream) {
+	testUpstream := func(name string, u Upstream) {
 		wg := sync.WaitGroup{}
 		errs := make([]error, 0)
 		errsLock := sync.Mutex{}
@@ -71,7 +70,7 @@ func Test_upstream(t *testing.T) {
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 				defer cancel()
-				rRaw, err := u.Exchange(ctx, qRaw, logrus.NewEntry(logrus.StandardLogger()))
+				rRaw, err := u.Exchange(ctx, qRaw)
 				if err != nil {
 					logErr(err)
 					return
@@ -91,7 +90,7 @@ func Test_upstream(t *testing.T) {
 		}
 	}
 
-	testUpstreamTimeout := func(name string, u upstream) {
+	testUpstreamTimeout := func(name string, u Upstream) {
 		q := new(dns.Msg)
 		q.SetQuestion("example.com.", dns.TypeA)
 		qRaw, err := q.Pack()
@@ -101,7 +100,7 @@ func Test_upstream(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*50)
 		defer cancel()
-		rRaw, err := u.Exchange(ctx, qRaw, logrus.NewEntry(logrus.StandardLogger()))
+		rRaw, err := u.Exchange(ctx, qRaw)
 		if err != nil {
 			return
 		}
@@ -125,7 +124,7 @@ func Test_upstream(t *testing.T) {
 			Addr:     addr,
 			Protocol: "udp",
 		}
-		upstreamUDP, err := newUpstream(sc, 100, nil)
+		upstreamUDP, err := NewUpstream(sc, 100, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +149,7 @@ func Test_upstream(t *testing.T) {
 			Protocol: "tcp",
 		}
 		sc.TCP.IdleTimeout = 8
-		upstreamTCP, err := newUpstream(sc, 100, nil)
+		upstreamTCP, err := NewUpstream(sc, 100, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -179,11 +178,11 @@ func Test_upstream(t *testing.T) {
 		sc := &BasicServerConfig{
 			Addr:               addr,
 			Protocol:           "dot",
-			insecureSkipVerify: true,
+			InsecureSkipVerify: true,
 		}
 		sc.DoT.IdleTimeout = 10
 		sc.DoT.ServerName = "example.com"
-		upstreamDot, err := newUpstream(sc, 100, nil)
+		upstreamDot, err := NewUpstream(sc, 100, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

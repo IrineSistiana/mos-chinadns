@@ -15,7 +15,7 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package main
+package dispatcher
 
 import (
 	"bytes"
@@ -27,9 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/bufpool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 
-	"github.com/IrineSistiana/mos-chinadns/domainlist"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/domainlist"
 
 	"github.com/sirupsen/logrus"
 
@@ -49,7 +49,7 @@ func Test_dispatcher(t *testing.T) {
 
 		q := new(dns.Msg)
 		q.SetQuestion(dns.Fqdn(domain), dns.TypeA)
-		r, err := d.serveDNS(context.Background(), q, getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
+		r, err := d.ServeDNS(context.Background(), q)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,7 +135,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 	switch mode {
 	case benchFlow:
 		for i := 0; i < b.N; i++ {
-			_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
+			_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"), false)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -149,7 +149,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
+					_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"), false)
 					if err != nil {
 						atomic.AddInt32(&ec, 1)
 						// panic("err")
@@ -165,7 +165,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 		var ec int32
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"))
+				_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"), false)
 				if err != nil {
 					atomic.AddInt32(&ec, 1)
 				}
@@ -206,7 +206,7 @@ type fakeUpstream struct {
 	rRaw    []byte
 }
 
-func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.Entry) (rRaw *bufpool.MsgBuf, err error) {
+func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
 	if u.rRaw != nil {
 		return bufpool.AcquireMsgBufAndCopy(u.rRaw), nil
 	}
@@ -239,21 +239,21 @@ func (u *fakeUpstream) Exchange(ctx context.Context, qRaw []byte, entry *logrus.
 	return bufpool.AcquireMsgBufAndCopy(rRawBytes), err
 }
 
-func initBenchDispatherAndServer(rRaw []byte) (*dispatcher, error) {
-	ipPo, err := newIPPolicies("accept:./chn.list|deny_all", logrus.NewEntry(logrus.StandardLogger()))
+func initBenchDispatherAndServer(rRaw []byte) (*Dispatcher, error) {
+	ipPo, err := newIPPolicies("accept:../chn.list|deny_all", logrus.NewEntry(logrus.StandardLogger()))
 	if err != nil {
 		return nil, fmt.Errorf("loading ip policies, %w", err)
 	}
-	doPo, err := newDomainPolicies("force:./chn_domain.list", logrus.NewEntry(logrus.StandardLogger()))
+	doPo, err := newDomainPolicies("force:../chn_domain.list", logrus.NewEntry(logrus.StandardLogger()))
 	if err != nil {
 		return nil, fmt.Errorf("loading domain policies, %w", err)
 	}
 	return initDispatherAndServer(0, 0, nil, nil, ipPo, doPo, rRaw)
 }
-func initTestDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) (*dispatcher, error) {
+func initTestDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies) (*Dispatcher, error) {
 	return initDispatherAndServer(lLatency, rLatency, lIP, rIP, ipPo, doPo, nil)
 }
-func initDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies, rRaw []byte) (*dispatcher, error) {
+func initDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, ipPo *ipPolicies, doPo *domainPolicies, rRaw []byte) (*Dispatcher, error) {
 	c := Config{}
 
 	// just set the vaule for initDispatcher() inner checks, we will hijeck the upstream later.
@@ -264,7 +264,7 @@ func initDispatherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.IP, i
 	c.ECS.Local = "1.2.3.0/24"
 	c.ECS.Remote = "4.3.2.0/24"
 
-	d, err := initDispatcher(&c, logrus.NewEntry(logrus.StandardLogger()))
+	d, err := InitDispatcher(&c, logrus.NewEntry(logrus.StandardLogger()))
 	if err != nil {
 		return nil, err
 	}

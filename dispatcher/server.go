@@ -15,7 +15,7 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package main
+package dispatcher
 
 import (
 	"context"
@@ -27,14 +27,16 @@ import (
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 
-	"github.com/IrineSistiana/mos-chinadns/bufpool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 )
 
 const (
 	serverTimeout = time.Second * 30
 )
 
-func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error {
+// ListenAndServe listen on a port and start the server. Only support tcp and udp network.
+// Will always return a non-nil err.
+func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error {
 
 	switch network {
 	case "tcp":
@@ -79,7 +81,10 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 
 					requestLogger := getRequestLogger(d.entry.Logger, c.RemoteAddr(), q.Id, q.Question, "tcp")
 					go func() {
-						rRaw := d.handleClientRawDNS(tcpConnCtx, q, qRaw, requestLogger)
+						queryCtx, cancel := context.WithTimeout(tcpConnCtx, queryTimeout)
+						defer cancel()
+
+						rRaw, _ := d.serveRawDNS(queryCtx, q, qRaw, requestLogger, true)
 						if rRaw == nil {
 							return // ignore it, result is empty
 						}
@@ -133,7 +138,10 @@ func (d *dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf.B[:n])
 			requestLogger := getRequestLogger(d.entry.Logger, from, q.Id, q.Question, "udp")
 			go func() {
-				rRaw := d.handleClientRawDNS(context.Background(), q, qRaw, requestLogger)
+				queryCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+				defer cancel()
+
+				rRaw, _ := d.serveRawDNS(queryCtx, q, qRaw, requestLogger, true)
 				if rRaw == nil {
 					return
 				}

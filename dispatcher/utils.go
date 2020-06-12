@@ -15,13 +15,13 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package main
+package dispatcher
 
 import (
 	"encoding/binary"
 	"io"
 
-	"github.com/IrineSistiana/mos-chinadns/bufpool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 )
 
@@ -82,7 +82,7 @@ func writeMsgToUDP(c io.Writer, m []byte) (n int, err error) {
 }
 
 func readMsgFromUDP(c io.Reader) (m *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
-	m, n, err = readMsgFromUDPWithLimit(c, maxUDPSize)
+	m, n, err = readMsgFromUDPWithLimit(c, MaxUDPSize)
 	return
 }
 

@@ -29,6 +29,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IrineSistiana/mos-chinadns/dispatcher"
+
 	"github.com/miekg/dns"
 
 	// dev only
@@ -99,7 +101,7 @@ func main() {
 
 	//gen config
 	if len(*genConfigTo) != 0 {
-		err := genConfig(*genConfigTo)
+		err := dispatcher.GenConfig(*genConfigTo)
 		if err != nil {
 			entry.Errorf("main: can not generate config template, %v", err)
 		} else {
@@ -134,19 +136,19 @@ func main() {
 		entry.Fatal("main: need a config file")
 	}
 
-	c, err := loadConfig(*configPath)
+	c, err := dispatcher.LoadConfig(*configPath)
 	if err != nil {
 		entry.Fatalf("main: can not load config file, %v", err)
 	}
 
-	d, err := initDispatcher(c, entry)
+	d, err := dispatcher.InitDispatcher(c, entry)
 	if err != nil {
 		entry.Fatalf("main: init dispatcher: %v", err)
 	}
 
 	startServerExitWhenFailed := func(network string) {
 		entry.Infof("main: %s server started", network)
-		if err := d.ListenAndServe(network, c.Bind.Addr, maxUDPSize); err != nil {
+		if err := d.ListenAndServe(network, c.Bind.Addr, dispatcher.MaxUDPSize); err != nil {
 			entry.Fatalf("main: %s server exited with err: %v", network, err)
 		} else {
 			entry.Infof("main: %s server exited", network)
