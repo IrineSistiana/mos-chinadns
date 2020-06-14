@@ -63,7 +63,7 @@ func Test_readMsgFromUDP(t *testing.T) {
 				t.Errorf("readMsgFromUDP() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if gotM != nil && tt.wantM != nil && !bytes.Equal(gotM.B, tt.wantM) {
+			if gotM != nil && tt.wantM != nil && !bytes.Equal(gotM.Bytes(), tt.wantM) {
 				t.Errorf("readMsgFromUDP() gotM = %v, want %v", gotM, tt.wantM)
 			}
 			if gotBrokenDataLeft != tt.wantBrokenDataLeft {
@@ -115,7 +115,7 @@ func Test_readMsgFromTCP(t *testing.T) {
 				t.Errorf("readMsgFromTCP() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if gotMRaw != nil && tt.wantMRaw != nil && !bytes.Equal(gotMRaw.B, tt.wantMRaw) {
+			if gotMRaw != nil && tt.wantMRaw != nil && !bytes.Equal(gotMRaw.Bytes(), tt.wantMRaw) {
 				t.Errorf("readMsgFromTCP() gotMRaw = %v, want %v", gotMRaw, tt.wantMRaw)
 			}
 			if gotBrokenDataLeft != tt.wantBrokenDataLeft {
@@ -125,5 +125,27 @@ func Test_readMsgFromTCP(t *testing.T) {
 				t.Errorf("readMsgFromTCP() gotN = %v, want %v", gotN, tt.wantN)
 			}
 		})
+	}
+}
+
+func Test_bucket(t *testing.T) {
+	maxSize := 150
+	bk := newBucket(maxSize)
+
+	// aquire & release
+	for i := 1; i <= maxSize; i++ {
+		if bk.aquire() != true {
+			t.Fatal("failed to aquire token from bucket")
+		}
+	}
+	if bk.aquire() != false {
+		t.Fatal("get a token from an empty bucket")
+	}
+
+	for i := 1; i <= maxSize; i++ {
+		bk.release()
+	}
+	if bk.i != 0 {
+		t.Fatal("bucket isn't full after all tokens are released")
 	}
 }

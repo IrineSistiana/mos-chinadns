@@ -77,7 +77,7 @@ func Test_upstream(t *testing.T) {
 				}
 				defer bufpool.ReleaseMsgBuf(rRaw)
 				r := new(dns.Msg)
-				err = r.Unpack(rRaw.B)
+				err = r.Unpack(rRaw.Bytes())
 				if err != nil {
 					logErr(err)
 					return

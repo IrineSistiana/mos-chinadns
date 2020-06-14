@@ -35,10 +35,10 @@ const (
 // if brokenDataLeft is unknownBrokenDataSize(-1), c should not be reused anymore.
 // if brokenDataLeft > 0, means some data has be read from c.
 func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
-	lengthRaw := bufpool.AcquireMsgBuf(2)
-	defer bufpool.ReleaseMsgBuf(lengthRaw)
+	lengthRaw := getTCPHeaderBuf()
+	defer releaseTCPHeaderBuf(lengthRaw)
 
-	n1, err := io.ReadFull(c, lengthRaw.B)
+	n1, err := io.ReadFull(c, lengthRaw)
 	n = n + n1
 	if err != nil {
 		if n1 != 0 {
@@ -48,13 +48,13 @@ func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n in
 	}
 
 	// dns headerSize
-	length := binary.BigEndian.Uint16(lengthRaw.B)
+	length := binary.BigEndian.Uint16(lengthRaw)
 	if length < 12 {
 		return nil, unknownBrokenDataSize, n, dns.ErrShortRead
 	}
 
 	buf := bufpool.AcquireMsgBuf(int(length))
-	n2, err := io.ReadFull(c, buf.B)
+	n2, err := io.ReadFull(c, buf.Bytes())
 	n = n + n2
 	if err != nil {
 		bufpool.ReleaseMsgBuf(buf)
@@ -65,11 +65,13 @@ func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n in
 }
 
 func writeMsgToTCP(c io.Writer, m []byte) (n int, err error) {
-	l := bufpool.AcquireMsgBuf(2 + len(m))
-	defer bufpool.ReleaseMsgBuf(l)
-	binary.BigEndian.PutUint16(l.B, uint16(len(m)))
-	copy(l.B[2:], m)
-	n, err = c.Write(l.B)
+	mb := bufpool.AcquireMsgBuf(2 + len(m))
+	defer bufpool.ReleaseMsgBuf(mb)
+	buf := mb.Bytes()
+
+	binary.BigEndian.PutUint16(buf, uint16(len(m)))
+	copy(buf[2:], m)
+	n, err = c.Write(buf)
 	n = n - 2
 	if n < 0 {
 		n = 0
@@ -89,7 +91,7 @@ func readMsgFromUDP(c io.Reader) (m *bufpool.MsgBuf, brokenDataLeft int, n int, 
 func readMsgFromUDPWithLimit(c io.Reader, maxSize int) (m *bufpool.MsgBuf, n int, err error) {
 	buf := bufpool.AcquireMsgBuf(maxSize)
 
-	n, err = c.Read(buf.B)
+	n, err = c.Read(buf.Bytes())
 	if err != nil {
 		bufpool.ReleaseMsgBuf(buf)
 		return nil, n, err
@@ -98,6 +100,6 @@ func readMsgFromUDPWithLimit(c io.Reader, maxSize int) (m *bufpool.MsgBuf, n int
 		bufpool.ReleaseMsgBuf(buf)
 		return nil, n, dns.ErrShortRead
 	}
-	buf.B = buf.B[:n]
+	buf.SetSize(n)
 	return buf, n, err
 }

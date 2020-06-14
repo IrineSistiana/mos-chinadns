@@ -22,37 +22,40 @@ package bufpool
 
 import (
 	"sync"
+
+	"github.com/miekg/dns"
 )
 
 var (
-	defaultAllocator = newAllocator()
+	defaultallocator = newAllocator()
 )
 
-type Allocator struct {
+type allocator struct {
 	buffers []sync.Pool
-}
-
-type MsgBuf struct {
-	B []byte
 }
 
 // newAllocator initiates a []byte allocator for dns.Msg less than 65536 bytes,
 // the waste(memory fragmentation) of space allocation is guaranteed to be
 // no more than 50%.
-func newAllocator() *Allocator {
-	alloc := new(Allocator)
+func newAllocator() *allocator {
+	alloc := new(allocator)
 	alloc.buffers = make([]sync.Pool, 17) // 1B -> 64K
 	for k := range alloc.buffers {
 		i := k
 		alloc.buffers[k].New = func() interface{} {
-			return &MsgBuf{B: make([]byte, 1<<uint32(i))}
+			return &MsgBuf{buf: make([]byte, 1<<uint32(i))}
 		}
 	}
 	return alloc
 }
 
+type MsgBuf struct {
+	buf  []byte
+	size int
+}
+
 func AcquireMsgBuf(size int) *MsgBuf {
-	return defaultAllocator.get(size)
+	return defaultallocator.get(size)
 }
 
 func AcquireMsgBufAndCopy(src []byte) *MsgBuf {
@@ -60,16 +63,43 @@ func AcquireMsgBufAndCopy(src []byte) *MsgBuf {
 		return nil
 	}
 	dst := AcquireMsgBuf(len(src))
-	copy(dst.B, src)
+	copy(dst.buf, src)
 	return dst
 }
 
+func AcquireMsgBufAndPack(m *dns.Msg) (*MsgBuf, error) {
+	buf := AcquirePackBuf()
+	mRaw, err := m.PackBuffer(buf)
+	if err != nil {
+		ReleasePackBuf(buf)
+		return nil, err
+	}
+	msgBuf := AcquireMsgBufAndCopy(mRaw)
+	ReleasePackBuf(mRaw)
+	return msgBuf, nil
+}
+
 func ReleaseMsgBuf(buf *MsgBuf) {
-	defaultAllocator.put(buf)
+	defaultallocator.put(buf)
+}
+
+func (b *MsgBuf) Bytes() []byte {
+	return b.buf[:b.size]
+}
+
+func (b *MsgBuf) SetSize(n int) {
+	if n > len(b.buf) {
+		panic("buffer overflow")
+	}
+	b.size = n
+}
+
+func (b *MsgBuf) Size() int {
+	return b.size
 }
 
 // get a *MsgBuf from pool with most appropriate cap
-func (alloc *Allocator) get(size int) *MsgBuf {
+func (alloc *allocator) get(size int) *MsgBuf {
 	if size <= 0 || size > 65536 {
 		panic("unexpected size")
 	}
@@ -81,18 +111,18 @@ func (alloc *Allocator) get(size int) *MsgBuf {
 	} else {
 		buf = alloc.buffers[bits+1].Get().(*MsgBuf)
 	}
-	buf.B = buf.B[:size]
+	buf.size = size
 	return buf
 }
 
 // put returns a *MsgBuf to pool for future use,
 // which the cap must be exactly 2^n
-func (alloc *Allocator) put(buf *MsgBuf) {
-	bits := msb(cap(buf.B))
-	if cap(buf.B) == 0 || cap(buf.B) > 65536 || cap(buf.B) != 1<<bits {
+func (alloc *allocator) put(b *MsgBuf) {
+	bits := msb(cap(b.buf))
+	if cap(b.buf) == 0 || cap(b.buf) > 65536 || cap(b.buf) != 1<<bits {
 		panic("unexpected cap size")
 	}
-	alloc.buffers[bits].Put(buf)
+	alloc.buffers[bits].Put(b)
 }
 
 // msb return the pos of most significiant bit

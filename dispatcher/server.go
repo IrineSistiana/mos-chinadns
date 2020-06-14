@@ -21,11 +21,7 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sync"
 	"time"
-
-	"github.com/miekg/dns"
-	"github.com/sirupsen/logrus"
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 )
@@ -72,7 +68,7 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 					}
 
 					q := getMsg()
-					err = q.Unpack(qRaw.B)
+					err = q.Unpack(qRaw.Bytes())
 					if err != nil { // invalid msg, drop it
 						bufpool.ReleaseMsgBuf(qRaw)
 						releaseMsg(q)
@@ -91,7 +87,7 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						defer bufpool.ReleaseMsgBuf(rRaw)
 
 						c.SetWriteDeadline(time.Now().Add(serverTimeout))
-						_, err = writeMsgToTCP(c, rRaw.B)
+						_, err = writeMsgToTCP(c, rRaw.Bytes())
 						if err != nil {
 							d.entry.Warnf("ListenAndServe: writeMsgToTCP: %v", err)
 						}
@@ -106,10 +102,9 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 			return err
 		}
 
-		readBuf := bufpool.AcquireMsgBuf(maxUDPSize)
+		readBuf := make([]byte, maxUDPSize)
 		for {
-			n, from, err := l.ReadFrom(readBuf.B)
-
+			n, from, err := l.ReadFrom(readBuf)
 			if err != nil {
 				er, ok := err.(net.Error)
 				if ok && er.Temporary() {
@@ -128,14 +123,14 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 			}
 
 			q := getMsg()
-			err = q.Unpack(readBuf.B[:n])
+			err = q.Unpack(readBuf[:n])
 			if err != nil {
 				releaseMsg(q)
 				continue
 			}
 
 			// copy it to a new and maybe smaller buf for the new goroutine
-			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf.B[:n])
+			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf[:n])
 			requestLogger := getRequestLogger(d.entry.Logger, from, q.Id, q.Question, "udp")
 			go func() {
 				queryCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
@@ -148,7 +143,7 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				defer bufpool.ReleaseMsgBuf(rRaw)
 
 				l.SetWriteDeadline(time.Now().Add(serverTimeout))
-				_, err = l.WriteTo(rRaw.B, from)
+				_, err = l.WriteTo(rRaw.Bytes(), from)
 				if err != nil {
 					d.entry.Warnf("ListenAndServe: WriteTo: %v", err)
 				}
@@ -156,75 +151,4 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 		}
 	}
 	return fmt.Errorf("unknown network: %s", network)
-}
-
-type bucket struct {
-	sync.Mutex
-	i   int
-	max int
-}
-
-func newBucket(max int) *bucket {
-	return &bucket{
-		i:   0,
-		max: max,
-	}
-}
-
-func (b *bucket) aquire() bool {
-	b.Lock()
-	defer b.Unlock()
-
-	if b.i >= b.max {
-		return false
-	}
-
-	b.i++
-	return true
-}
-
-func (b *bucket) release() {
-	b.Lock()
-	defer b.Unlock()
-
-	if b.i < 0 {
-		panic("nagetive num in bucket")
-	}
-
-	b.i--
-}
-
-var requestLoggerPool = sync.Pool{
-	New: func() interface{} {
-		f := make(logrus.Fields, 3+4) // default is three fields, we add 4 more
-		f["from"] = nil
-		f["id"] = nil
-		f["question"] = nil
-		f["protocol"] = nil
-		e := &logrus.Entry{
-			Data: f,
-		}
-		return e
-	},
-}
-
-func getRequestLogger(logger *logrus.Logger, from net.Addr, id uint16, question []dns.Question, protocol string) *logrus.Entry {
-	entry := requestLoggerPool.Get().(*logrus.Entry)
-	f := entry.Data
-	f["from"] = from
-	f["id"] = id
-	f["question"] = question
-	f["protocol"] = protocol
-	entry.Logger = logger
-	return entry
-}
-
-func releaseRequestLogger(entry *logrus.Entry) {
-	f := entry.Data
-	f["from"] = nil
-	f["id"] = nil
-	f["question"] = nil
-	f["protocol"] = nil
-	entry.Logger = nil
-	requestLoggerPool.Put(entry)
 }

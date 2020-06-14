@@ -17,7 +17,11 @@
 
 package bufpool
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/miekg/dns"
+)
 
 var packBufPool = sync.Pool{}
 
@@ -25,6 +29,16 @@ var packBufPool = sync.Pool{}
 func AcquirePackBuf() []byte {
 	buf, _ := packBufPool.Get().([]byte)
 	return buf // it's ok that buf is nil
+}
+
+func AcquirePackBufAndPack(m *dns.Msg) ([]byte, error) {
+	buf := AcquirePackBuf()
+	mRaw, err := m.PackBuffer(buf)
+	if err != nil {
+		ReleasePackBuf(buf)
+		return nil, err
+	}
+	return mRaw, nil
 }
 
 // ReleasePackBuf should only releases the buf returned by dns.Msg.PackBuffer()

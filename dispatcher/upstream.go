@@ -229,15 +229,15 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 	once := sync.Once{}
 	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
 	defer bufpool.ReleaseMsgBuf(qRawCopy)
-	originalID := utils.ExchangeMsgID(dc.msgID, qRawCopy.B)
+	originalID := utils.ExchangeMsgID(dc.msgID, qRawCopy.Bytes())
 
 	// write first
 	dc.SetDeadline(time.Now().Add(generalIOTimeout)) // give write enough time to complete, avoid broken write.
-	n, err := u.writeMsg(dc.Conn, qRawCopy.B)
+	n, err := u.writeMsg(dc.Conn, qRawCopy.Bytes())
 	if n > 0 {
 		dc.lastIO = time.Now()
 	}
-	if n != len(qRawCopy.B) {
+	if n != qRawCopy.Size() {
 		err = fmt.Errorf("writeMsg: broken write: %v", err)
 	}
 	if err != nil {
@@ -257,7 +257,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 	// if we need to empty the conn (some data of previous reply)
 	if dc.frameleft > 0 {
 		buf := bufpool.AcquireMsgBuf(dc.frameleft)
-		n, err = io.ReadFull(dc, buf.B)
+		n, err = io.ReadFull(dc, buf.Bytes())
 		bufpool.ReleaseMsgBuf(buf)
 		if n > 0 {
 			dc.lastIO = time.Now()
@@ -277,7 +277,7 @@ read:
 		goto ioErr
 	}
 
-	if utils.GetMsgID(rRaw.B) != dc.msgID {
+	if utils.GetMsgID(rRaw.Bytes()) != dc.msgID {
 		bufpool.ReleaseMsgBuf(rRaw)
 		if !isNewConn {
 			// this connection is reused, data might be the reply
@@ -295,7 +295,7 @@ read:
 	once.Do(func() {}) // do nothing, just fire the once
 	u.cp.put(dc)
 
-	utils.SetMsgID(originalID, rRaw.B)
+	utils.SetMsgID(originalID, rRaw.Bytes())
 	return rRaw, nil
 
 ioErr:
@@ -523,7 +523,7 @@ func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte) (rRaw *bufpool.Ms
 	// as "application/dns-message", SHOULD use a DNS ID of 0 in every DNS
 	// request.
 	// https://tools.ietf.org/html/rfc8484 4.1
-	oldID := utils.ExchangeMsgID(0, qRawCopy.B)
+	oldID := utils.ExchangeMsgID(0, qRawCopy.Bytes())
 
 	// Padding characters for base64url MUST NOT be included.
 	// See: https://tools.ietf.org/html/rfc8484 6
@@ -532,7 +532,7 @@ func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte) (rRaw *bufpool.Ms
 	defer bufpool.ReleaseStringBuilder(urlBuilder)
 	urlBuilder.Write(u.preparedURL)
 	encoder := base64.NewEncoder(base64.RawURLEncoding, urlBuilder)
-	encoder.Write(qRawCopy.B)
+	encoder.Write(qRawCopy.Bytes())
 	encoder.Close()
 
 	rRaw, err = u.doHTTP(ctx, urlBuilder.String())
@@ -541,11 +541,11 @@ func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte) (rRaw *bufpool.Ms
 	}
 
 	// change the id back
-	if utils.GetMsgID(rRaw.B) != 0 { // check msg id
+	if utils.GetMsgID(rRaw.Bytes()) != 0 { // check msg id
 		bufpool.ReleaseMsgBuf(rRaw)
 		return nil, dns.ErrId
 	}
-	utils.SetMsgID(oldID, rRaw.B)
+	utils.SetMsgID(oldID, rRaw.Bytes())
 	return rRaw, nil
 }
 
@@ -635,4 +635,40 @@ func getUpstreamDialTCPFunc(network, dstAddress, sock5Address string, timeout ti
 		defer cancel()
 		return d(ctx, "", "")
 	}, nil
+}
+
+type bucket struct {
+	sync.Mutex
+	i   int
+	max int
+}
+
+func newBucket(max int) *bucket {
+	return &bucket{
+		i:   0,
+		max: max,
+	}
+}
+
+func (b *bucket) aquire() bool {
+	b.Lock()
+	defer b.Unlock()
+
+	if b.i >= b.max {
+		return false
+	}
+
+	b.i++
+	return true
+}
+
+func (b *bucket) release() {
+	b.Lock()
+	defer b.Unlock()
+
+	if b.i < 0 {
+		panic("nagetive num in bucket")
+	}
+
+	b.i--
 }

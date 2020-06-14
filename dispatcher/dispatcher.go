@@ -93,31 +93,6 @@ func newEDNS0subnet(subnet *dns.EDNS0_SUBNET) *edns0subnet {
 	return e
 }
 
-var (
-	timerPool = sync.Pool{}
-)
-
-func getTimer(t time.Duration) *time.Timer {
-	timer, ok := timerPool.Get().(*time.Timer)
-	if !ok {
-		return time.NewTimer(t)
-	}
-	if timer.Reset(t) {
-		panic("dispatcher.go getTimer: active timer trapped in timerPool")
-	}
-	return timer
-}
-
-func releaseTimer(timer *time.Timer) {
-	if !timer.Stop() {
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
-	timerPool.Put(timer)
-}
-
 // InitDispatcher inits a dispatche from configuration
 func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 	d := new(Dispatcher)
@@ -257,22 +232,18 @@ func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err 
 	q.CopyTo(qCopy)
 	entry := getRequestLogger(d.entry.Logger, nil, qCopy.Id, qCopy.Question, "internel")
 
-	buf := bufpool.AcquirePackBuf()
-	qRaw, err := q.PackBuffer(buf)
+	qRaw, err := bufpool.AcquireMsgBufAndPack(q)
 	if err != nil {
-		bufpool.ReleasePackBuf(buf)
 		return nil, fmt.Errorf("invalid dns msg q: pack err: %v", err)
 	}
-	qRawBuf := bufpool.AcquireMsgBufAndCopy(qRaw)
-	bufpool.ReleasePackBuf(qRaw)
 
-	rRaw, err := d.serveRawDNS(ctx, q, qRawBuf, entry, false)
+	rRaw, err := d.serveRawDNS(ctx, q, qRaw, entry, false)
 	if err != nil {
 		return nil, err
 	}
 
 	r = new(dns.Msg)
-	err = r.Unpack(rRaw.B)
+	err = r.Unpack(rRaw.Bytes())
 	bufpool.ReleaseMsgBuf(rRaw)
 	if err != nil {
 		return nil, fmt.Errorf("invalid reply: unpack err: %v", err)
@@ -287,27 +258,6 @@ const (
 	succeed
 )
 
-var notificationChanPool = sync.Pool{
-	New: func() interface{} {
-		return make(chan notification, 1)
-	},
-}
-
-func getNotificationChan() chan notification {
-	return notificationChanPool.Get().(chan notification)
-}
-
-func releaseNotificationChan(c chan notification) {
-	for {
-		select {
-		case <-c:
-		default:
-			notificationChanPool.Put(c)
-			return
-		}
-	}
-}
-
 func noBlockNotify(c chan notification, n notification) {
 	select {
 	case c <- n:
@@ -316,34 +266,10 @@ func noBlockNotify(c chan notification, n notification) {
 	}
 }
 
-var resChanPool = sync.Pool{
-	New: func() interface{} {
-		return make(chan *bufpool.MsgBuf, 1)
-	},
-}
-
-func getResChan() chan *bufpool.MsgBuf {
-	return resChanPool.Get().(chan *bufpool.MsgBuf)
-}
-
-func releaseResChan(c chan *bufpool.MsgBuf) {
-	for {
-		select {
-		case rRaw := <-c:
-			if rRaw != nil {
-				bufpool.ReleaseMsgBuf(rRaw)
-			}
-		default:
-			resChanPool.Put(c)
-			return
-		}
-	}
-}
-
 // serveRawDNS: The error will be ErrServerFailed or ctx err
 // Note: serveRawDNS will release q, qRaw, requestLogger.
 func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpool.MsgBuf, requestLogger *logrus.Entry, wantFailureReply bool) (*bufpool.MsgBuf, error) {
-	qRaw := qRawBuf.B
+	qRaw := qRawBuf.Bytes()
 	queryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -406,7 +332,7 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 					return
 				}
 
-				if !forceLocal && !d.acceptRawLocalRes(rRaw.B, requestLogger) {
+				if !forceLocal && !d.acceptRawLocalRes(rRaw.Bytes(), requestLogger) {
 					requestLogger.Debugf("serveDNS: local result denied, rtt: %dms", rtt)
 					bufpool.ReleaseMsgBuf(rRaw)
 					noBlockNotify(localNotificationChan, failed)
@@ -504,30 +430,25 @@ func genFailureReply(q *dns.Msg) *bufpool.MsgBuf {
 	defer releaseMsg(r)
 	r.SetReply(q)
 	r.Rcode = dns.RcodeServerFailure
-	buf := bufpool.AcquirePackBuf()
-	rRawWithPackBuf, err := r.PackBuffer(buf)
+
+	rRaw, err := bufpool.AcquireMsgBufAndPack(r)
 	if err != nil {
-		bufpool.ReleasePackBuf(buf)
-		return nil
+		return nil // just ignore the err, it won't happen.
 	}
-	rRaw := bufpool.AcquireMsgBufAndCopy(rRawWithPackBuf)
-	bufpool.ReleasePackBuf(rRawWithPackBuf)
 	return rRaw
 }
 
 func (d *Dispatcher) queryUpstream(ctx context.Context, q *dns.Msg, qRaw []byte, u Upstream, ecs *edns0subnet) (rRaw *bufpool.MsgBuf, err error) {
 	if ecs != nil {
-		q, appended := appendECSIfNotExist(q, ecs)
+		qWithECS, appended := appendECSIfNotExist(q, ecs)
 		if appended {
-			buf := bufpool.AcquirePackBuf()
-			qRawCopy, err := q.PackBuffer(buf)
+			qRawWithECS, err := bufpool.AcquirePackBufAndPack(qWithECS)
 			if err != nil {
-				bufpool.ReleasePackBuf(buf)
-				return nil, err
+				return nil, fmt.Errorf("pack ecs appended msg err: %v", err)
 			}
-			defer bufpool.ReleasePackBuf(qRawCopy)
-			defer releaseMsg(q)
-			return u.Exchange(ctx, qRawCopy)
+			defer bufpool.ReleasePackBuf(qRawWithECS)
+			defer releaseMsg(qWithECS)
+			return u.Exchange(ctx, qRawWithECS)
 		}
 	}
 	return u.Exchange(ctx, qRaw)
@@ -541,33 +462,15 @@ func (d *Dispatcher) queryRemote(ctx context.Context, q *dns.Msg, qRaw []byte) (
 	return d.queryUpstream(ctx, q, qRaw, d.remote.client, d.ecs.remote)
 }
 
-var dnsMsgPool = sync.Pool{
-	New: func() interface{} {
-		return new(dns.Msg)
-	},
-}
-
-func getMsg() *dns.Msg {
-	return dnsMsgPool.Get().(*dns.Msg)
-}
-
-func releaseMsg(m *dns.Msg) {
-	m.Question = nil
-	m.Answer = nil
-	m.Ns = nil
-	m.Extra = nil
-	dnsMsgPool.Put(m)
-}
-
 // both q and ecs shouldn't be nil, the returned m is a shadow copy of q if ecs is appended.
 func appendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg, appended bool) {
 	opt := q.IsEdns0()
 	if opt == nil { // we need a new opt
-		qCopy := getMsg()
+		qWithECS := getMsg()
 		//shadow copy
-		*qCopy = *q
-		qCopy.Extra = append(q.Extra, ecs.opt)
-		return qCopy, true
+		*qWithECS = *q
+		qWithECS.Extra = append(q.Extra, ecs.opt)
+		return qWithECS, true
 	}
 
 	hasECS := false // check if msg q already has a ECS section
