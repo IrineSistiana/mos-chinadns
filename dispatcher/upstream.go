@@ -515,15 +515,15 @@ func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte) (rRaw *bufpool.Ms
 
 	ctx, cancel := context.WithTimeout(context.Background(), dohIOTimeout)
 	defer cancel()
-	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
-	defer bufpool.ReleaseMsgBuf(qRawCopy)
+	qRawWithNewID := bufpool.AcquireMsgBufAndCopy(qRaw)
+	defer bufpool.ReleaseMsgBuf(qRawWithNewID)
 
 	// In order to maximize HTTP cache friendliness, DoH clients using media
 	// formats that include the ID field from the DNS message header, such
 	// as "application/dns-message", SHOULD use a DNS ID of 0 in every DNS
 	// request.
 	// https://tools.ietf.org/html/rfc8484 4.1
-	oldID := utils.ExchangeMsgID(0, qRawCopy.Bytes())
+	oldID := utils.ExchangeMsgID(0, qRawWithNewID.Bytes())
 
 	// Padding characters for base64url MUST NOT be included.
 	// See: https://tools.ietf.org/html/rfc8484 6
@@ -532,7 +532,7 @@ func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte) (rRaw *bufpool.Ms
 	defer bufpool.ReleaseStringBuilder(urlBuilder)
 	urlBuilder.Write(u.preparedURL)
 	encoder := base64.NewEncoder(base64.RawURLEncoding, urlBuilder)
-	encoder.Write(qRawCopy.Bytes())
+	encoder.Write(qRawWithNewID.Bytes())
 	encoder.Close()
 
 	rRaw, err = u.doHTTP(ctx, urlBuilder.String())
@@ -555,6 +555,7 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*bufpool.MsgBuf, 
 	if err != nil {
 		return nil, fmt.Errorf("interal err: NewRequestWithContext: %w", err)
 	}
+
 	req.Header["Accept"] = []string{"application/dns-message"}
 
 	resp, err := u.client.Do(req)
@@ -563,34 +564,45 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*bufpool.MsgBuf, 
 	}
 	defer resp.Body.Close()
 
-	// check Content-Length
-	if resp.ContentLength > dns.MaxMsgSize {
-		return nil, fmt.Errorf("ContentLength %d is bigger than dns.MaxMsgSize", resp.ContentLength)
-	}
-
 	// check statu code
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("bad http status codes %d", resp.StatusCode)
 	}
 
-	buf := bufpool.AcquireBytesBuf()
-	defer bufpool.ReleaseBytesBuf(buf)
-	_, err = buf.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize))
+	// check Content-Length
+	if resp.ContentLength > dns.MaxMsgSize {
+		return nil, fmt.Errorf("content-length %d is bigger than dns.MaxMsgSize %d", resp.ContentLength, dns.MaxMsgSize)
+	}
 
-	if err != nil {
-		if err == io.EOF {
-			return nil, fmt.Errorf("response body is too large: buf.ReadFrom(): %w", err)
+	if resp.ContentLength >= 0 && resp.ContentLength < 12 {
+		return nil, fmt.Errorf("content-length %d is smaller than dns header size 12", resp.ContentLength)
+	}
+
+	var msgBuf *bufpool.MsgBuf
+	if resp.ContentLength > 12 {
+		msgBuf = bufpool.AcquireMsgBuf(int(resp.ContentLength))
+		_, err = io.ReadFull(resp.Body, msgBuf.Bytes())
+		if err != nil {
+			bufpool.ReleaseMsgBuf(msgBuf)
+			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
 		}
-		return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
+	} else { // resp.ContentLength = -1, unknown length
+		buf := bufpool.AcquireBytesBuf()
+		defer bufpool.ReleaseBytesBuf(buf)
+		_, err = buf.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize))
+		if err != nil {
+			if err == io.EOF {
+				return nil, fmt.Errorf("response body is too large: buf.ReadFrom(): %w", err)
+			}
+			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
+		}
+		if buf.Len() < 12 {
+			return nil, dns.ErrShortRead
+		}
+		msgBuf = bufpool.AcquireMsgBufAndCopy(buf.Bytes())
 	}
-	body := buf.Bytes()
 
-	if len(body) < 12 {
-		return nil, dns.ErrShortRead
-	}
-
-	rRaw := bufpool.AcquireMsgBufAndCopy(body)
-	return rRaw, nil
+	return msgBuf, nil
 }
 
 func getSocks5ContextDailer(network, sock5Address string) (proxy.ContextDialer, error) {
