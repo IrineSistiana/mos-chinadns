@@ -18,7 +18,6 @@
 package dispatcher
 
 import (
-	"net"
 	"sync"
 	"time"
 
@@ -117,11 +116,9 @@ func releaseMsg(m *dns.Msg) {
 
 var requestLoggerPool = sync.Pool{
 	New: func() interface{} {
-		f := make(logrus.Fields, 3+4) // default is three fields, we add 4 more
-		f["from"] = nil
+		f := make(logrus.Fields, 3+2) // default is three fields, we add 2 more
 		f["id"] = nil
 		f["question"] = nil
-		f["protocol"] = nil
 		e := &logrus.Entry{
 			Data: f,
 		}
@@ -129,23 +126,19 @@ var requestLoggerPool = sync.Pool{
 	},
 }
 
-func getRequestLogger(logger *logrus.Logger, from net.Addr, id uint16, question []dns.Question, protocol string) *logrus.Entry {
+func (d *Dispatcher) getRequestLogger(q *dns.Msg) *logrus.Entry {
 	entry := requestLoggerPool.Get().(*logrus.Entry)
 	f := entry.Data
-	f["from"] = from
-	f["id"] = id
-	f["question"] = question
-	f["protocol"] = protocol
-	entry.Logger = logger
+	f["id"] = q.Id
+	f["question"] = q.Question
+	entry.Logger = d.entry.Logger
 	return entry
 }
 
 func releaseRequestLogger(entry *logrus.Entry) {
 	f := entry.Data
-	f["from"] = nil
 	f["id"] = nil
 	f["question"] = nil
-	f["protocol"] = nil
 	entry.Logger = nil
 	requestLoggerPool.Put(entry)
 }

@@ -135,10 +135,11 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 	switch mode {
 	case benchFlow:
 		for i := 0; i < b.N; i++ {
-			_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"), false)
+			rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), false)
 			if err != nil {
 				b.Fatal(err)
 			}
+			bufpool.ReleaseMsgBuf(rRaw)
 		}
 	case benchConcurrent:
 		wg := sync.WaitGroup{}
@@ -149,11 +150,12 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"), false)
+					rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), false)
 					if err != nil {
 						atomic.AddInt32(&ec, 1)
 						// panic("err")
 					}
+					bufpool.ReleaseMsgBuf(rRaw)
 				}()
 			}
 			wg.Wait()
@@ -165,10 +167,11 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 		var ec int32
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), getRequestLogger(logrus.StandardLogger(), nil, 0, nil, "udp"), false)
+				rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), false)
 				if err != nil {
 					atomic.AddInt32(&ec, 1)
 				}
+				bufpool.ReleaseMsgBuf(rRaw)
 			}
 		})
 		if ec > 0 {

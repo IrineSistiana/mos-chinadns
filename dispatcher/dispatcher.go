@@ -228,24 +228,24 @@ func isUnusualType(q *dns.Msg) bool {
 // ServeDNS send q to upstreams and return first valid result.
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 
-	qCopy := getMsg()
+	qCopy := getMsg() // serveRawDNS will release q but ServeDNS shouldn't. Copy it.
 	q.CopyTo(qCopy)
-	entry := getRequestLogger(d.entry.Logger, nil, qCopy.Id, qCopy.Question, "internel")
 
 	qRaw, err := bufpool.AcquireMsgBufAndPack(q)
 	if err != nil {
 		return nil, fmt.Errorf("invalid dns msg q: pack err: %v", err)
 	}
 
-	rRaw, err := d.serveRawDNS(ctx, q, qRaw, entry, false)
+	rRaw, err := d.serveRawDNS(ctx, q, qRaw, false)
 	if err != nil {
 		return nil, err
 	}
 
-	r = new(dns.Msg)
+	r = getMsg()
 	err = r.Unpack(rRaw.Bytes())
 	bufpool.ReleaseMsgBuf(rRaw)
 	if err != nil {
+		releaseMsg(r)
 		return nil, fmt.Errorf("invalid reply: unpack err: %v", err)
 	}
 	return r, nil
@@ -268,10 +268,12 @@ func noBlockNotify(c chan notification, n notification) {
 
 // serveRawDNS: The error will be ErrServerFailed or ctx err
 // Note: serveRawDNS will release q, qRaw, requestLogger.
-func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpool.MsgBuf, requestLogger *logrus.Entry, wantFailureReply bool) (*bufpool.MsgBuf, error) {
+func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpool.MsgBuf, wantFailureReply bool) (*bufpool.MsgBuf, error) {
 	qRaw := qRawBuf.Bytes()
 	queryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	requestLogger := d.getRequestLogger(q)
 
 	resChan := getResChan()
 	upstreamFailedNotificationChan := getNotificationChan()

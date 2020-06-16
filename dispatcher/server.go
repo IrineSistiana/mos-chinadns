@@ -72,15 +72,14 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 					if err != nil { // invalid msg, drop it
 						bufpool.ReleaseMsgBuf(qRaw)
 						releaseMsg(q)
-						continue
+						return // this tcp conn may invalid, close it.
 					}
 
-					requestLogger := getRequestLogger(d.entry.Logger, c.RemoteAddr(), q.Id, q.Question, "tcp")
 					go func() {
 						queryCtx, cancel := context.WithTimeout(tcpConnCtx, queryTimeout)
 						defer cancel()
 
-						rRaw, _ := d.serveRawDNS(queryCtx, q, qRaw, requestLogger, true)
+						rRaw, _ := d.serveRawDNS(queryCtx, q, qRaw, true)
 						if rRaw == nil {
 							return // ignore it, result is empty
 						}
@@ -131,12 +130,11 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 
 			// copy it to a new and maybe smaller buf for the new goroutine
 			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf[:n])
-			requestLogger := getRequestLogger(d.entry.Logger, from, q.Id, q.Question, "udp")
 			go func() {
 				queryCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 				defer cancel()
 
-				rRaw, _ := d.serveRawDNS(queryCtx, q, qRaw, requestLogger, true)
+				rRaw, _ := d.serveRawDNS(queryCtx, q, qRaw, true)
 				if rRaw == nil {
 					return
 				}
