@@ -39,12 +39,17 @@ type allocator struct {
 // no more than 50%.
 func newAllocator() *allocator {
 	alloc := new(allocator)
-	alloc.buffers = make([]sync.Pool, 17) // 1B -> 64K
-	for k := range alloc.buffers {
+	alloc.buffers = make([]sync.Pool, 18) // 1~17: 1B -> 64K // 18: 64K + 2 bit(for tcp buf)
+	for k := 0; k < 17; k++ {
 		i := k
-		alloc.buffers[k].New = func() interface{} {
-			return &MsgBuf{buf: make([]byte, 1<<uint32(i))}
+		if i < 17 {
+			alloc.buffers[k].New = func() interface{} {
+				return &MsgBuf{buf: make([]byte, 1<<uint32(i)), from: i}
+			}
 		}
+	}
+	alloc.buffers[17].New = func() interface{} {
+		return &MsgBuf{buf: make([]byte, 0xffff+2), from: 17}
 	}
 	return alloc
 }
@@ -101,7 +106,7 @@ func (b *MsgBuf) Len() int {
 
 // get a *MsgBuf from pool with most appropriate cap
 func (alloc *allocator) get(l int) *MsgBuf {
-	if l <= 0 || l > 65536 {
+	if l <= 0 || l > 65536+2 {
 		panic("invalid length")
 	}
 
