@@ -44,7 +44,8 @@ const (
 	tlsHandshakeTimeout = time.Second * 5
 	dialTCPTimeout      = time.Second * 5
 	dialUDPTimeout      = time.Second * 5
-	generalIOTimeout    = time.Second * 1
+	generalWriteTimeout = time.Second * 1
+	generalReadTimeout  = time.Second * 3
 	dohIOTimeout        = time.Second * 10
 )
 
@@ -222,57 +223,47 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 		dc.msgID++
 	}
 
-	queryCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	// this once is to make sure that the following
 	// dc.Conn.SetDeadline wouldn't be called after dc is put into connPool
-	once := sync.Once{}
 	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
 	defer bufpool.ReleaseMsgBuf(qRawCopy)
 	originalID := utils.ExchangeMsgID(dc.msgID, qRawCopy.Bytes())
 
 	// write first
-	dc.SetDeadline(time.Now().Add(generalIOTimeout)) // give write enough time to complete, avoid broken write.
-	n, err := u.writeMsg(dc.Conn, qRawCopy.Bytes())
-	if n > 0 {
-		dc.lastIO = time.Now()
-	}
-	if n != qRawCopy.Len() {
-		err = fmt.Errorf("writeMsg: broken write: %v", err)
-	}
-	if err != nil {
-		goto ioErr
-	}
-
-	dc.SetDeadline(time.Time{}) // overwrite ddl, this ddl should be handled by queryCtx
-	go func() {
-		select {
-		case <-queryCtx.Done():
-			once.Do(func() { dc.SetDeadline(time.Now()) })
+	dc.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
+	_, err = u.writeMsg(dc.Conn, qRawCopy.Bytes())
+	if err != nil { // write err typically is fatal err
+		dc.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, err
 		}
-	}()
+		// ctx is not done yet, open a new conn and try again.
+		return u.exchange(ctx, qRaw, true)
+	}
 
+	var n int
+	dc.SetReadDeadline(time.Now().Add(generalReadTimeout))
 	// if we need to empty the conn (some data of previous reply)
 	if dc.frameleft > 0 {
 		buf := bufpool.AcquireMsgBuf(dc.frameleft)
 		n, err = io.ReadFull(dc, buf.Bytes())
 		bufpool.ReleaseMsgBuf(buf)
 		if n > 0 {
-			dc.lastIO = time.Now()
+			dc.lastRead = time.Now()
 			dc.frameleft = dc.frameleft - n
 		}
 		if err != nil {
-			goto ioErr
+			goto readErr
 		}
 	}
 
 read:
 	rRaw, dc.frameleft, n, err = u.readMsg(dc.Conn)
 	if n > 0 {
-		dc.lastIO = time.Now()
+		dc.lastRead = time.Now()
 	}
 	if err != nil {
-		goto ioErr
+		goto readErr
 	}
 
 	if utils.GetMsgID(rRaw.Bytes()) != dc.msgID {
@@ -286,29 +277,21 @@ read:
 			// new connection should not receive a mismatched id, this is an error
 			dc.Close()
 			err = dns.ErrId
-			goto ioErr
+			goto readErr
 		}
 	}
 
-	once.Do(func() {}) // do nothing, just fire the once
 	u.cp.put(dc)
-
 	utils.SetMsgID(originalID, rRaw.Bytes())
 	return rRaw, nil
 
-ioErr:
-	ctxErr := queryCtx.Err()
-	// err caused by cancelled ctx, it's ok to reuse the connection
+readErr:
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 		if dc.frameleft == unknownBrokenDataSize {
 			dc.Close()
 			return nil, fmt.Errorf("conn is broken, %v", err)
 		}
-		once.Do(func() {}) // do nothing, just fire the once
 		u.cp.put(dc)
-		if ctxErr != nil {
-			return nil, ctxErr
-		}
 		return nil, err
 	}
 
@@ -319,10 +302,10 @@ ioErr:
 
 	// reused connection got an unexpected err
 	dc.Close()
-	if ctxErr != nil {
-		return nil, err // return the true err instead ctx's err
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, err
 	}
-	// but ctx isn't done yet, open a new conn and try again
+	// ctx is not done yet, open a new conn and try again.
 	return u.exchange(ctx, qRaw, true)
 }
 
@@ -340,15 +323,15 @@ type dnsConn struct {
 	net.Conn
 	frameleft int
 	msgID     uint16
-	lastIO    time.Time
+	lastRead  time.Time
 }
 
-func newDNSConn(c net.Conn, lastIO time.Time) *dnsConn {
+func newDNSConn(c net.Conn, lastRead time.Time) *dnsConn {
 	return &dnsConn{
 		Conn:      c,
 		frameleft: 0,
 		msgID:     dns.Id(),
-		lastIO:    lastIO,
+		lastRead:  lastRead,
 	}
 }
 
@@ -374,7 +357,7 @@ func (p *connPool) runCleanner(force bool) {
 		res := p.pool[:0]
 		for i := range p.pool {
 			// remove expired conns
-			if time.Since(p.pool[i].lastIO) < p.ttl {
+			if time.Since(p.pool[i].lastRead) < p.ttl {
 				res = append(res, p.pool[i])
 			} else { // expired, release the resources
 				p.pool[i].Conn.Close()
@@ -397,7 +380,7 @@ func (p *connPool) runCleanner(force bool) {
 			}
 
 			//then remove expired conns
-			if time.Since(p.pool[i].lastIO) < p.ttl {
+			if time.Since(p.pool[i].lastRead) < p.ttl {
 				res = append(res, p.pool[i])
 			} else {
 				p.pool[i].Conn.Close()
@@ -445,7 +428,7 @@ func (p *connPool) get() (dc *dnsConn) {
 		p.pool[len(p.pool)-1] = nil
 		p.pool = p.pool[:len(p.pool)-1]
 
-		if time.Since(dc.lastIO) > p.ttl {
+		if time.Since(dc.lastRead) > p.ttl {
 			dc.Conn.Close() // expired
 			// the last elem is expired, means all elems are expired
 			// remove them asap
