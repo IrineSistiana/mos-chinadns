@@ -222,8 +222,8 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 		dc.msgID++
 	}
 
-	var queryCtx context.Context
-	var cancel func()
+	queryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// this once is to make sure that the following
 	// dc.Conn.SetDeadline wouldn't be called after dc is put into connPool
 	once := sync.Once{}
@@ -245,8 +245,6 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 	}
 
 	dc.SetDeadline(time.Time{}) // overwrite ddl, this ddl should be handled by queryCtx
-	queryCtx, cancel = context.WithCancel(ctx)
-	defer cancel()
 	go func() {
 		select {
 		case <-queryCtx.Done():
