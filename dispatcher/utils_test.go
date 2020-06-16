@@ -14,7 +14,6 @@
 //
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 package dispatcher
 
 import (
@@ -147,5 +146,38 @@ func Test_bucket(t *testing.T) {
 	}
 	if bk.i != 0 {
 		t.Fatal("bucket isn't full after all tokens are released")
+	}
+}
+
+func Test_writeMsgToTCP(t *testing.T) {
+	biggestPayload := make([]byte, dns.MaxMsgSize)
+
+	type args struct {
+		m []byte
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantN   int
+		wantC   string
+		wantErr bool
+	}{
+		{"biggest payload", args{m: biggestPayload}, dns.MaxMsgSize, string([]byte{0xff, 0xff}) + string(biggestPayload), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &bytes.Buffer{}
+			gotN, err := writeMsgToTCP(c, tt.args.m)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("writeMsgToTCP() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if gotN != tt.wantN {
+				t.Errorf("writeMsgToTCP() = %v, want %v", gotN, tt.wantN)
+			}
+			if gotC := c.String(); gotC != tt.wantC {
+				t.Errorf("writeMsgToTCP() = %v, want %v", gotC, tt.wantC)
+			}
+		})
 	}
 }

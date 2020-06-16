@@ -19,7 +19,9 @@ package dispatcher
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
+	"net"
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
@@ -64,14 +66,35 @@ func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n in
 	return buf, 0, n, nil
 }
 
+var err = errors.New("payload is bigger than dns.MaxMsgSize")
+
 func writeMsgToTCP(c io.Writer, m []byte) (n int, err error) {
-	buf := bufpool.AcquireBytesBuf()
-	defer bufpool.ReleaseBytesBuf(buf)
-	buf.Grow(2 + len(m))
-	buf.WriteByte(byte(len(m) >> 8))
-	buf.WriteByte(byte(len(m)))
-	buf.Write(m)
-	n, err = c.Write(buf.Bytes())
+	if len(m) > dns.MaxMsgSize {
+		return
+	}
+
+	if tcpConn, ok := c.(*net.TCPConn); ok {
+		h := getTCPHeaderBuf()
+		defer releaseTCPHeaderBuf(h)
+		h[0] = byte(len(m) >> 8)
+		h[1] = byte(len(m))
+
+		n, err := (&net.Buffers{h, m}).WriteTo(tcpConn)
+		n = n - 2
+		if n < 0 {
+			n = 0
+		}
+		return int(n), err
+	}
+
+	mb := bufpool.AcquireMsgBuf(len(m) + 2)
+	defer bufpool.ReleaseMsgBuf(mb)
+	buf := mb.Bytes()
+	buf[0] = byte(len(m) >> 8)
+	buf[1] = byte(len(m))
+	copy(buf[2:], m)
+
+	n, err = c.Write(buf)
 	n = n - 2
 	if n < 0 {
 		n = 0
