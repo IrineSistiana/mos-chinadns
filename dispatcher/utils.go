@@ -65,13 +65,13 @@ func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n in
 }
 
 func writeMsgToTCP(c io.Writer, m []byte) (n int, err error) {
-	mb := bufpool.AcquireMsgBuf(2 + len(m))
-	defer bufpool.ReleaseMsgBuf(mb)
-	buf := mb.Bytes()
-
-	binary.BigEndian.PutUint16(buf, uint16(len(m)))
-	copy(buf[2:], m)
-	n, err = c.Write(buf)
+	buf := bufpool.AcquireBytesBuf()
+	defer bufpool.ReleaseBytesBuf(buf)
+	buf.Grow(2 + len(m))
+	buf.WriteByte(byte(len(m) >> 8))
+	buf.WriteByte(byte(len(m)))
+	buf.Write(m)
+	n, err = c.Write(buf.Bytes())
 	n = n - 2
 	if n < 0 {
 		n = 0
