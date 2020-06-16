@@ -50,12 +50,15 @@ func newAllocator() *allocator {
 }
 
 type MsgBuf struct {
-	buf  []byte
-	size int
+	buf    []byte
+	length int
+
+	// from which sync.Pool
+	from int
 }
 
-func AcquireMsgBuf(size int) *MsgBuf {
-	return defaultallocator.get(size)
+func AcquireMsgBuf(l int) *MsgBuf {
+	return defaultallocator.get(l)
 }
 
 func AcquireMsgBufAndCopy(src []byte) *MsgBuf {
@@ -63,19 +66,17 @@ func AcquireMsgBufAndCopy(src []byte) *MsgBuf {
 		return nil
 	}
 	dst := AcquireMsgBuf(len(src))
-	copy(dst.buf, src)
+	copy(dst.Bytes(), src)
 	return dst
 }
 
 func AcquireMsgBufAndPack(m *dns.Msg) (*MsgBuf, error) {
-	buf := AcquirePackBuf()
-	mRaw, err := m.PackBuffer(buf)
+	packBuf, err := AcquirePackBufAndPack(m)
 	if err != nil {
-		ReleasePackBuf(buf)
 		return nil, err
 	}
-	msgBuf := AcquireMsgBufAndCopy(mRaw)
-	ReleasePackBuf(mRaw)
+	msgBuf := AcquireMsgBufAndCopy(packBuf)
+	ReleasePackBuf(packBuf)
 	return msgBuf, nil
 }
 
@@ -84,45 +85,41 @@ func ReleaseMsgBuf(buf *MsgBuf) {
 }
 
 func (b *MsgBuf) Bytes() []byte {
-	return b.buf[:b.size]
+	return b.buf[:b.length]
 }
 
-func (b *MsgBuf) SetSize(n int) {
-	if n > len(b.buf) {
+func (b *MsgBuf) SetLength(l int) {
+	if l > len(b.buf) {
 		panic("buffer overflow")
 	}
-	b.size = n
+	b.length = l
 }
 
-func (b *MsgBuf) Size() int {
-	return b.size
+func (b *MsgBuf) Len() int {
+	return b.length
 }
 
 // get a *MsgBuf from pool with most appropriate cap
-func (alloc *allocator) get(size int) *MsgBuf {
-	if size <= 0 || size > 65536 {
-		panic("unexpected size")
+func (alloc *allocator) get(l int) *MsgBuf {
+	if l <= 0 || l > 65536 {
+		panic("invalid length")
 	}
 
-	var buf *MsgBuf
-	bits := msb(size)
-	if size == 1<<bits {
-		buf = alloc.buffers[bits].Get().(*MsgBuf)
+	var b *MsgBuf
+	bits := msb(l)
+	if l == 1<<bits {
+		b = alloc.buffers[bits].Get().(*MsgBuf)
 	} else {
-		buf = alloc.buffers[bits+1].Get().(*MsgBuf)
+		b = alloc.buffers[bits+1].Get().(*MsgBuf)
 	}
-	buf.size = size
-	return buf
+	b.SetLength(l)
+	return b
 }
 
 // put returns a *MsgBuf to pool for future use,
 // which the cap must be exactly 2^n
 func (alloc *allocator) put(b *MsgBuf) {
-	bits := msb(cap(b.buf))
-	if cap(b.buf) == 0 || cap(b.buf) > 65536 || cap(b.buf) != 1<<bits {
-		panic("unexpected cap size")
-	}
-	alloc.buffers[bits].Put(b)
+	alloc.buffers[b.from].Put(b)
 }
 
 // msb return the pos of most significiant bit

@@ -18,6 +18,7 @@
 package bufpool
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/miekg/dns"
@@ -37,6 +38,11 @@ func AcquirePackBufAndPack(m *dns.Msg) ([]byte, error) {
 	if err != nil {
 		ReleasePackBuf(buf)
 		return nil, err
+	}
+
+	if len(mRaw) > dns.MaxMsgSize { // seems PackBuffer won't check msg size
+		ReleasePackBuf(mRaw)
+		return nil, fmt.Errorf("msg wire size %d is bigger than dns.MaxMsgSize", len(mRaw))
 	}
 	return mRaw, nil
 }

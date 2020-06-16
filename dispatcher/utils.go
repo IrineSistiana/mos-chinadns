@@ -100,6 +100,6 @@ func readMsgFromUDPWithLimit(c io.Reader, maxSize int) (m *bufpool.MsgBuf, n int
 		bufpool.ReleaseMsgBuf(buf)
 		return nil, n, dns.ErrShortRead
 	}
-	buf.SetSize(n)
+	buf.SetLength(n)
 	return buf, n, err
 }

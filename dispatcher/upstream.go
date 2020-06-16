@@ -237,7 +237,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 	if n > 0 {
 		dc.lastIO = time.Now()
 	}
-	if n != qRawCopy.Size() {
+	if n != qRawCopy.Len() {
 		err = fmt.Errorf("writeMsg: broken write: %v", err)
 	}
 	if err != nil {
