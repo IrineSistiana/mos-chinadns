@@ -31,11 +31,9 @@ const (
 	unknownBrokenDataSize = -1
 )
 
-// readMsgFromTCP reads msg from a tcp connection, m should be
-// released by bufpool.ReleaseMsgBuf when m is no longer used.
+// readMsgFromTCP reads msg from a tcp connection.
 // brokenDataLeft indicates the frame size which have not be read from c.
 // if brokenDataLeft is unknownBrokenDataSize(-1), c should not be reused anymore.
-// if brokenDataLeft > 0, means some data has be read from c.
 func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n int, err error) {
 	lengthRaw := getTCPHeaderBuf()
 	defer releaseTCPHeaderBuf(lengthRaw)
@@ -66,11 +64,11 @@ func readMsgFromTCP(c io.Reader) (mRaw *bufpool.MsgBuf, brokenDataLeft int, n in
 	return buf, 0, n, nil
 }
 
-var err = errors.New("payload is bigger than dns.MaxMsgSize")
+var errMsgTooBig = errors.New("payload is bigger than dns.MaxMsgSize")
 
 func writeMsgToTCP(c io.Writer, m []byte) (n int, err error) {
 	if len(m) > dns.MaxMsgSize {
-		return
+		return 0, errMsgTooBig
 	}
 
 	if tcpConn, ok := c.(*net.TCPConn); ok {

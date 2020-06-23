@@ -225,13 +225,13 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 
 	// this once is to make sure that the following
 	// dc.Conn.SetDeadline wouldn't be called after dc is put into connPool
-	qRawCopy := bufpool.AcquireMsgBufAndCopy(qRaw)
-	defer bufpool.ReleaseMsgBuf(qRawCopy)
-	originalID := utils.ExchangeMsgID(dc.msgID, qRawCopy.Bytes())
+	qRawWithNewID := bufpool.AcquireMsgBufAndCopy(qRaw)
+	defer bufpool.ReleaseMsgBuf(qRawWithNewID)
+	originalID := utils.ExchangeMsgID(dc.msgID, qRawWithNewID.Bytes())
 
 	// write first
 	dc.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
-	_, err = u.writeMsg(dc.Conn, qRawCopy.Bytes())
+	_, err = u.writeMsg(dc.Conn, qRawWithNewID.Bytes())
 	if err != nil { // write err typically is fatal err
 		dc.Close()
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -244,13 +244,13 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 	var n int
 	dc.SetReadDeadline(time.Now().Add(generalReadTimeout))
 	// if we need to empty the conn (some data of previous reply)
-	if dc.frameleft > 0 {
-		buf := bufpool.AcquireMsgBuf(dc.frameleft)
+	if dc.frameLeft > 0 {
+		buf := bufpool.AcquireMsgBuf(dc.frameLeft)
 		n, err = io.ReadFull(dc, buf.Bytes())
 		bufpool.ReleaseMsgBuf(buf)
 		if n > 0 {
 			dc.lastRead = time.Now()
-			dc.frameleft = dc.frameleft - n
+			dc.frameLeft = dc.frameLeft - n
 		}
 		if err != nil {
 			goto readErr
@@ -258,7 +258,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 	}
 
 read:
-	rRaw, dc.frameleft, n, err = u.readMsg(dc.Conn)
+	rRaw, dc.frameLeft, n, err = u.readMsg(dc.Conn)
 	if n > 0 {
 		dc.lastRead = time.Now()
 	}
@@ -287,7 +287,7 @@ read:
 
 readErr:
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		if dc.frameleft == unknownBrokenDataSize {
+		if dc.frameLeft == unknownBrokenDataSize {
 			dc.Close()
 			return nil, fmt.Errorf("conn is broken, %v", err)
 		}
@@ -311,9 +311,9 @@ readErr:
 
 type connPool struct {
 	sync.Mutex
-	maxSize          int
-	ttl              time.Duration
-	cleannerInterval time.Duration
+	maxSize         int
+	ttl             time.Duration
+	cleanerInterval time.Duration
 
 	pool      []*dnsConn
 	lastClean time.Time
@@ -321,7 +321,7 @@ type connPool struct {
 
 type dnsConn struct {
 	net.Conn
-	frameleft int
+	frameLeft int
 	msgID     uint16
 	lastRead  time.Time
 }
@@ -329,7 +329,7 @@ type dnsConn struct {
 func newDNSConn(c net.Conn, lastRead time.Time) *dnsConn {
 	return &dnsConn{
 		Conn:      c,
-		frameleft: 0,
+		frameLeft: 0,
 		msgID:     dns.Id(),
 		lastRead:  lastRead,
 	}
@@ -337,22 +337,22 @@ func newDNSConn(c net.Conn, lastRead time.Time) *dnsConn {
 
 func newConnPool(size int, ttl, gcInterval time.Duration) *connPool {
 	return &connPool{
-		maxSize:          size,
-		ttl:              ttl,
-		cleannerInterval: gcInterval,
-		pool:             make([]*dnsConn, 0),
+		maxSize:         size,
+		ttl:             ttl,
+		cleanerInterval: gcInterval,
+		pool:            make([]*dnsConn, 0),
 	}
 
 }
 
-// runCleanner must run under lock
-func (p *connPool) runCleanner(force bool) {
+// runCleaner must run under lock
+func (p *connPool) runCleaner(force bool) {
 	if p.disabled() || len(p.pool) == 0 {
 		return
 	}
 
 	//scheduled or forced
-	if force || time.Since(p.lastClean) > p.cleannerInterval {
+	if force || time.Since(p.lastClean) > p.cleanerInterval {
 		p.lastClean = time.Now()
 		res := p.pool[:0]
 		for i := range p.pool {
@@ -372,14 +372,14 @@ func (p *connPool) runCleanner(force bool) {
 		res := p.pool[:0]
 		mid := len(p.pool) >> 1
 		for i := range p.pool {
-			// forcely remove half conns first
+			// remove half of the connections first
 			if i < mid {
 				p.pool[i].Conn.Close()
 				p.pool[i] = nil
 				continue
 			}
 
-			//then remove expired conns
+			// then remove expired connections
 			if time.Since(p.pool[i].lastRead) < p.ttl {
 				res = append(res, p.pool[i])
 			} else {
@@ -396,7 +396,7 @@ func (p *connPool) put(dc *dnsConn) {
 		return
 	}
 
-	if p.disabled() || dc.frameleft == unknownBrokenDataSize {
+	if p.disabled() || dc.frameLeft == unknownBrokenDataSize {
 		dc.Conn.Close()
 		return
 	}
@@ -404,7 +404,7 @@ func (p *connPool) put(dc *dnsConn) {
 	p.Lock()
 	defer p.Unlock()
 
-	p.runCleanner(false)
+	p.runCleaner(false)
 
 	if len(p.pool) >= p.maxSize {
 		dc.Conn.Close() // pool is full, drop it
@@ -421,7 +421,7 @@ func (p *connPool) get() (dc *dnsConn) {
 	p.Lock()
 	defer p.Unlock()
 
-	p.runCleanner(false)
+	p.runCleaner(false)
 
 	if len(p.pool) > 0 {
 		dc := p.pool[len(p.pool)-1]
@@ -432,7 +432,7 @@ func (p *connPool) get() (dc *dnsConn) {
 			dc.Conn.Close() // expired
 			// the last elem is expired, means all elems are expired
 			// remove them asap
-			p.runCleanner(true)
+			p.runCleaner(true)
 			return nil
 		}
 		return dc
@@ -545,7 +545,7 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*bufpool.MsgBuf, 
 	}
 	defer resp.Body.Close()
 
-	// check statu code
+	// check status code
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("bad http status codes %d", resp.StatusCode)
 	}

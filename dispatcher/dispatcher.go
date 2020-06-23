@@ -81,19 +81,28 @@ type edns0subnet struct {
 	opt    *dns.OPT
 }
 
-func newEDNS0subnet(subnet *dns.EDNS0_SUBNET) *edns0subnet {
+func initEDNS0Subnet(subnet *dns.EDNS0_SUBNET) *edns0subnet {
 	e := new(edns0subnet)
+	e.subnet = subnet
+
 	o := new(dns.OPT)
 	o.SetUDPSize(MaxUDPSize)
 	o.Hdr.Name = "."
 	o.Hdr.Rrtype = dns.TypeOPT
 	o.Option = []dns.EDNS0{subnet}
-	e.subnet = subnet
 	e.opt = o
 	return e
 }
 
-// InitDispatcher inits a dispatche from configuration
+func (ecs *edns0subnet) getSubnet() *dns.EDNS0_SUBNET {
+	return ecs.subnet
+}
+
+func (ecs *edns0subnet) getOpt() *dns.OPT {
+	return ecs.opt
+}
+
+// InitDispatcher inits a dispatcher from configuration
 func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 	d := new(Dispatcher)
 	d.entry = entry
@@ -157,68 +166,68 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 	}
 
 	if len(conf.ECS.Local) != 0 {
-		subnet, err := newEDNSSubnet(conf.ECS.Local)
+		subnet, err := newEDNS0SubnetFromStr(conf.ECS.Local)
 		if err != nil {
 			return nil, fmt.Errorf("parsing local ECS subnet, %w", err)
 		}
-		d.ecs.local = newEDNS0subnet(subnet)
+		d.ecs.local = initEDNS0Subnet(subnet)
 		d.entry.Info("initDispatcher: local server ECS enabled")
 	}
 
 	if len(conf.ECS.Remote) != 0 {
-		subnet, err := newEDNSSubnet(conf.ECS.Remote)
+		subnet, err := newEDNS0SubnetFromStr(conf.ECS.Remote)
 		if err != nil {
 			return nil, fmt.Errorf("parsing remote ECS subnet, %w", err)
 		}
-		d.ecs.remote = newEDNS0subnet(subnet)
+		d.ecs.remote = initEDNS0Subnet(subnet)
 		d.entry.Info("initDispatcher: remote server ECS enabled")
 	}
 
 	return d, nil
 }
 
-func newEDNSSubnet(strECSSubnet string) (*dns.EDNS0_SUBNET, error) {
-	strs := strings.SplitN(strECSSubnet, "/", 2)
-	if len(strs) != 2 {
-		return nil, fmt.Errorf("invalid ECS address [%s], not a CIDR notation", strECSSubnet)
+func newEDNS0SubnetFromStr(s string) (*dns.EDNS0_SUBNET, error) {
+	ipAndMask := strings.SplitN(s, "/", 2)
+	if len(ipAndMask) != 2 {
+		return nil, fmt.Errorf("invalid ECS address [%s], not a CIDR notation", s)
 	}
 
-	ip := net.ParseIP(strs[0])
+	ip := net.ParseIP(ipAndMask[0])
 	if ip == nil {
-		return nil, fmt.Errorf("invalid ECS address [%s], invalid ip", strECSSubnet)
+		return nil, fmt.Errorf("invalid ECS address [%s], invalid ip", s)
 	}
-	sourceNetmask, err := strconv.Atoi(strs[1])
+	sourceNetmask, err := strconv.Atoi(ipAndMask[1])
 	if err != nil || sourceNetmask > 128 || sourceNetmask < 0 {
-		return nil, fmt.Errorf("invalid ECS address [%s], invalid net mask", strECSSubnet)
+		return nil, fmt.Errorf("invalid ECS address [%s], invalid net mask", s)
 	}
 
-	ednsSubnet := new(dns.EDNS0_SUBNET)
+	edns0Subnet := new(dns.EDNS0_SUBNET)
 	// edns family: https://www.iana.org/assignments/address-family-numbers/address-family-numbers.xhtml
 	// ipv4 = 1
 	// ipv6 = 2
 	if ip4 := ip.To4(); ip4 != nil {
-		ednsSubnet.Family = 1
-		ednsSubnet.SourceNetmask = uint8(sourceNetmask)
+		edns0Subnet.Family = 1
+		edns0Subnet.SourceNetmask = uint8(sourceNetmask)
 		ip = ip4
 	} else {
 		if ip6 := ip.To16(); ip6 != nil {
-			ednsSubnet.Family = 2
-			ednsSubnet.SourceNetmask = uint8(sourceNetmask)
+			edns0Subnet.Family = 2
+			edns0Subnet.SourceNetmask = uint8(sourceNetmask)
 			ip = ip6
 		} else {
-			return nil, fmt.Errorf("invalid ECS address [%s], it's not an ipv4 or ipv6 address", strECSSubnet)
+			return nil, fmt.Errorf("invalid ECS address [%s], it's not an ipv4 or ipv6 address", s)
 		}
 	}
 
-	ednsSubnet.Code = dns.EDNS0SUBNET
-	ednsSubnet.Address = ip
+	edns0Subnet.Code = dns.EDNS0SUBNET
+	edns0Subnet.Address = ip
 
 	// SCOPE PREFIX-LENGTH, an unsigned octet representing the leftmost
 	// number of significant bits of ADDRESS that the response covers.
 	// In queries, it MUST be set to 0.
 	// https://tools.ietf.org/html/rfc7871
-	ednsSubnet.SourceScope = 0
-	return ednsSubnet, nil
+	edns0Subnet.SourceScope = 0
+	return edns0Subnet, nil
 }
 
 func isUnusualType(q *dns.Msg) bool {
@@ -228,22 +237,23 @@ func isUnusualType(q *dns.Msg) bool {
 // ServeDNS send q to upstreams and return first valid result.
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 
-	qCopy := getMsg() // serveRawDNS will release q but ServeDNS shouldn't. Copy it.
-	q.CopyTo(qCopy)
-
-	qRaw, err := bufpool.AcquireMsgBufAndPack(q)
+	qRaw, err := bufpool.AcquireMsgBufAndPack(q) // serveRawDNS will release qRaw
 	if err != nil {
 		return nil, fmt.Errorf("invalid dns msg q: pack err: %v", err)
 	}
 
-	rRaw, err := d.serveRawDNS(ctx, q, qRaw, false)
+	qCopy := getMsg()
+	*qCopy = *q // shadow copy, serveRawDNS will release qCopy
+
+	rRaw, err := d.serveRawDNS(ctx, qCopy, qRaw)
 	if err != nil {
 		return nil, err
 	}
+	defer bufpool.ReleaseMsgBuf(rRaw)
 
 	r = getMsg()
 	err = r.Unpack(rRaw.Bytes())
-	bufpool.ReleaseMsgBuf(rRaw)
+
 	if err != nil {
 		releaseMsg(r)
 		return nil, fmt.Errorf("invalid reply: unpack err: %v", err)
@@ -267,8 +277,8 @@ func noBlockNotify(c chan notification, n notification) {
 }
 
 // serveRawDNS: The error will be ErrServerFailed or ctx err
-// Note: serveRawDNS will release q, qRaw, requestLogger.
-func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpool.MsgBuf, wantFailureReply bool) (*bufpool.MsgBuf, error) {
+// Note: serveRawDNS will release q, qRawBuf.
+func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpool.MsgBuf) (*bufpool.MsgBuf, error) {
 	qRaw := qRawBuf.Bytes()
 	queryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -283,35 +293,8 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 	defer serveDNSWG.Done()
 
 	go func() {
-		var doLocal, doRemote, forceLocal bool
-		if d.local.client != nil {
-			doLocal = true
-			if isUnusualType(q) {
-				doLocal = !d.local.denyUnusualTypes
-			} else {
-				if d.local.domainPolicies != nil {
-					p := d.local.domainPolicies.check(q.Question[0].Name)
-					switch p {
-					case policyActionForce:
-						doLocal = true
-						forceLocal = true
-					case policyActionAccept:
-						doLocal = true
-					case policyActionDeny:
-						doLocal = false
-					}
-					requestLogger.Debugf("serveDNS: localDomainPolicies: dl: %v, fl: %v", doLocal, forceLocal)
-				}
-			}
-		}
-
-		if d.remote.client != nil {
-			doRemote = true
-			switch {
-			case forceLocal:
-				doRemote = false
-			}
-		}
+		doLocal, doRemote, forceLocal := d.selectUpstreams(q)
+		requestLogger.Debugf("serveDNS: selectUpstreams: dl: %v, fl: %v", doLocal, forceLocal)
 
 		upstreamWG := sync.WaitGroup{}
 		var localNotificationChan chan notification
@@ -407,24 +390,45 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 		}
 	}()
 
-	var rRaw *bufpool.MsgBuf
-	var err error
 	select {
-	case rRaw = <-resChan:
+	case rRaw := <-resChan:
+		return rRaw, nil
 	case <-upstreamFailedNotificationChan:
-		err = ErrServerFailed
+		return nil, ErrServerFailed
 	case <-ctx.Done():
-		err = ctx.Err()
+		return nil, ctx.Err()
+	}
+}
+
+func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote, forceLocal bool) {
+	if d.local.client != nil {
+		doLocal = true
+		if isUnusualType(q) {
+			doLocal = !d.local.denyUnusualTypes
+		} else {
+			if d.local.domainPolicies != nil {
+				p := d.local.domainPolicies.check(q.Question[0].Name)
+				switch p {
+				case policyActionForce:
+					doLocal = true
+					forceLocal = true
+				case policyActionAccept:
+					doLocal = true
+				case policyActionDeny:
+					doLocal = false
+				}
+			}
+		}
 	}
 
-	if err != nil {
-		if wantFailureReply {
-			requestLogger.Warnf("serveRawDNS: %v", err)
-			return genFailureReply(q), nil
+	if d.remote.client != nil {
+		doRemote = true
+		switch {
+		case forceLocal:
+			doRemote = false
 		}
-		return nil, err
 	}
-	return rRaw, nil
+	return
 }
 
 func genFailureReply(q *dns.Msg) *bufpool.MsgBuf {
@@ -471,19 +475,19 @@ func appendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg, appended boo
 		qWithECS := getMsg()
 		//shadow copy
 		*qWithECS = *q
-		qWithECS.Extra = append(q.Extra, ecs.opt)
+		qWithECS.Extra = append(q.Extra, ecs.getOpt())
 		return qWithECS, true
 	}
 
-	hasECS := false // check if msg q already has a ECS section
+	optContainsECS := false // check if msg q already has a ECS section
 	for o := range opt.Option {
 		if opt.Option[o].Option() == dns.EDNS0SUBNET {
-			hasECS = true
+			optContainsECS = true
 			break
 		}
 	}
 
-	if !hasECS {
+	if !optContainsECS {
 		qCopy := getMsg()
 		//shadow copy
 		*qCopy = *q
@@ -494,11 +498,11 @@ func appendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg, appended boo
 		if opt == nil {
 			panic("broken copy or corrupted data")
 		}
-		opt.Option = append(opt.Option, ecs.subnet)
+		opt.Option = append(opt.Option, ecs.getSubnet())
 		return qCopy, true
 	}
 
-	return q, false
+	return nil, false
 }
 func (d *Dispatcher) acceptLocalRes(res *dns.Msg, requestLogger *logrus.Entry) (ok bool) {
 	if res == nil {
@@ -581,7 +585,7 @@ func (d *Dispatcher) acceptLocalRes(res *dns.Msg, requestLogger *logrus.Entry) (
 		return false
 	}
 
-	requestLogger.Debug("acceptLocalRes: true: default accpet")
+	requestLogger.Debug("acceptLocalRes: true: default accept")
 	return true
 }
 

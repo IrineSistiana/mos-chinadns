@@ -79,8 +79,12 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						queryCtx, cancel := context.WithTimeout(tcpConnCtx, queryTimeout)
 						defer cancel()
 
-						rRaw, _ := d.serveRawDNS(queryCtx, q, qRaw, true)
-						if rRaw == nil {
+						requestLogger := d.getRequestLogger(q)
+						defer releaseRequestLogger(requestLogger)
+
+						rRaw, err := d.serveRawDNS(queryCtx, q, qRaw)
+						if err != nil {
+							requestLogger.Warnf("query failed, %v", err)
 							return // ignore it, result is empty
 						}
 						defer bufpool.ReleaseMsgBuf(rRaw)
@@ -88,7 +92,7 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						c.SetWriteDeadline(time.Now().Add(serverTimeout))
 						_, err = writeMsgToTCP(c, rRaw.Bytes())
 						if err != nil {
-							d.entry.Warnf("ListenAndServe: writeMsgToTCP: %v", err)
+							requestLogger.Warnf("failed to send reply back, writeMsgToTCP: %v", err)
 						}
 					}()
 
@@ -134,8 +138,12 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				queryCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 				defer cancel()
 
-				rRaw, _ := d.serveRawDNS(queryCtx, q, qRaw, true)
-				if rRaw == nil {
+				requestLogger := d.getRequestLogger(q)
+				defer releaseRequestLogger(requestLogger)
+
+				rRaw, err := d.serveRawDNS(queryCtx, q, qRaw)
+				if err != nil {
+					requestLogger.Warnf("query failed, %v", err)
 					return
 				}
 				defer bufpool.ReleaseMsgBuf(rRaw)
@@ -143,7 +151,7 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				l.SetWriteDeadline(time.Now().Add(serverTimeout))
 				_, err = l.WriteTo(rRaw.Bytes(), from)
 				if err != nil {
-					d.entry.Warnf("ListenAndServe: WriteTo: %v", err)
+					requestLogger.Warnf("failed to send reply back, WriteTo: %v", err)
 				}
 			}()
 		}
