@@ -180,7 +180,7 @@ var (
 )
 
 func (u *upstreamWithLimit) Exchange(ctx context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
-	if u.bk.aquire() == false {
+	if u.bk.acquire() == false {
 		return nil, errTooManyConcurrentQueries
 	}
 	defer u.bk.release()
@@ -570,11 +570,11 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*bufpool.MsgBuf, 
 	} else { // resp.ContentLength = -1, unknown length
 		buf := bufpool.AcquireBytesBuf()
 		defer bufpool.ReleaseBytesBuf(buf)
-		_, err = buf.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize))
+		n, err := buf.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize+1))
+		if n > dns.MaxMsgSize {
+			return nil, fmt.Errorf("response body is too large, first 1kb data: %s", string(buf.Bytes()[:1024]))
+		}
 		if err != nil {
-			if err == io.EOF {
-				return nil, fmt.Errorf("response body is too large: buf.ReadFrom(): %w", err)
-			}
 			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
 		}
 		if buf.Len() < 12 {
@@ -584,18 +584,6 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*bufpool.MsgBuf, 
 	}
 
 	return msgBuf, nil
-}
-
-func getSocks5ContextDailer(network, sock5Address string) (proxy.ContextDialer, error) {
-	d, err := proxy.SOCKS5(network, sock5Address, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)
-	}
-	contextDialer, ok := d.(proxy.ContextDialer)
-	if !ok {
-		return nil, errors.New("internel err: socks5 dialer is not a proxy.ContextDialer")
-	}
-	return contextDialer, nil
 }
 
 func getUpstreamDialContextFunc(network, dstAddress, sock5Address string) (func(ctx context.Context, _, _ string) (net.Conn, error), error) {
@@ -643,7 +631,7 @@ func newBucket(max int) *bucket {
 	}
 }
 
-func (b *bucket) aquire() bool {
+func (b *bucket) acquire() bool {
 	b.Lock()
 	defer b.Unlock()
 

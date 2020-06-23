@@ -131,13 +131,13 @@ func Test_bucket(t *testing.T) {
 	maxSize := 150
 	bk := newBucket(maxSize)
 
-	// aquire & release
+	// acquire & release
 	for i := 1; i <= maxSize; i++ {
-		if bk.aquire() != true {
-			t.Fatal("failed to aquire token from bucket")
+		if bk.acquire() != true {
+			t.Fatal("failed to acquire token from bucket")
 		}
 	}
-	if bk.aquire() != false {
+	if bk.acquire() != false {
 		t.Fatal("get a token from an empty bucket")
 	}
 
