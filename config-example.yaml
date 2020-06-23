@@ -1,110 +1,104 @@
 # 监听设定
 bind:
-    addr: "127.0.0.1:53" # [必需]监听地址。IP设为`0.0.0.0`可监听包括IPv6的所有地址
-    protocol: "all" # 监听协议。`tcp`|`udp`|`all`其中之一。留空默认`all`
+    addr: "127.0.0.1:53" # [必需]监听地址。IP设为`0.0.0.0`可监听包括IPv6的所有地址。
+    protocol: "all" # 监听协议。`tcp`|`udp`|`all`其中之一。留空默认`all`。
 
 # 分流器设定
 dispatcher:
-    max_concurrent_queries: 150 # 最大并发查询数。默认150
+    max_concurrent_queries: 150 # 最大并发查询数。默认150。
 
 # 上游服务器设定
 server:
     # 本地服务器设定
     local:
-        addr: "223.5.5.5:53" # 服务器地址。留空将禁用该服务器
-        protocol: "udp" # 服务器协议。`tcp`|`udp`|`doh`|`dot`其中之一。留空默认`udp`
-        
-        # socks5代理服务器地址，仅`protocol`为`tcp`|`doh`|`dot`时有用
-        # 目前不支持udp协议，不支持认证
-        socks5: "" 
+        addr: "223.5.5.5:53" # 服务器地址。留空将禁用该服务器。
+        protocol: "udp" # 服务器协议。`tcp`|`udp`|`doh`|`dot`其中之一。留空默认`udp`。
+        socks5: "" # socks5代理服务器地址，不支持udp协议，不支持认证。
 
-        # TCP设定，仅`protocol`为`tcp`时有用
+        # TCP设定，仅`protocol`为`tcp`时有用。
         tcp:
-            idle_timeout: 10 # 空连接超时时间。单位: 秒。0表示禁用连接重用
+            idle_timeout: 10 # 空连接超时时间。单位: 秒。0表示禁用连接重用。
 
-        # DoT设定，仅`protocol`为`dot`有用
-        dot: 
-            server_name: "dns.alidns.com" # [必需] 服务器的域名/证书名 
-            idle_timeout: 10 # 空连接超时时间。单位: 秒。0表示禁用连接重用
+        # DoT设定，仅`protocol`为`dot`有用。
+        dot:
+            server_name: "dns.alidns.com" # [必需] 服务器的域名/证书名。
+            idle_timeout: 10 # 空连接超时时间。单位: 秒。0表示禁用连接重用。
 
-        # DoH设定，仅`protocol`为`doh`有用
-        doh: 
-            # [必需] DoH的URL
-            # 支持在最后添服务器加除`dns`以外的参数
-            # e.g. "https://223.5.5.5/dns-query?arg1=value1&arg2=value2"
-            url: "https://223.5.5.5/dns-query" 
+        # DoH设定，仅`protocol`为`doh`有用。
+        doh:
+            url: "https://223.5.5.5/dns-query" # [必需] DoH的URL。
 
-        deny_unusual_types: false # 是否屏蔽不常见(包含多个Question、非A和AAAA)请求：
-        deny_results_without_ip: false  # 是否屏蔽没有IP的A和AAAA应答
-        check_cname: false # 域名策略(见下)是否也检查返回应答中的CNAME记录(CNAME深度检查)
+        deny_unusual_types: false # 是否屏蔽不常见(包含多个Question、非A和AAAA)请求。
+        deny_results_without_ip: false  # 是否屏蔽没有IP的A和AAAA应答。
+        check_cname: false # 域名策略(见下)是否也检查返回应答中的CNAME记录(CNAME深度检查)。
 
         # IP策略设定
         # 格式: "action:file|action:file|..."
-        # 返回的应答IP将根据此策略判断是接受还是丢弃，可由多个策略构成，用`|`分割，
-        # 处理流程从左至右，如果上一条策略没有命中，将匹配下一条
-        # 如果直到最后都没有命中任何策略，默认处理方式为`accept`
         #
-        # `file`为IP表的路径，IP表格式参见[这里](#ip表格式)
+        # IP策略决定本地服务器返回的结果能否被接受。可由多个策略构成，用`|`分割，
+        # 处理流程从左至右，如果上一条策略没有命中，将匹配下一条。
+        # 如果直到最后都没有命中任何策略，默认接受。
+        #
+        # `file`为IP表文件的路径。
         # `action`可以是：
-        #   `accept`: 如果IP在`file`中，接受返回的应答
-        #   `deny`: 如果IP在`file`中，拒绝返回的应答
-        #   `deny_all`: 无条件拒绝，用在最后，拒绝所有之前没有命中的应答
-        #       相当于把默认处理方式改为`deny`，后不需要跟`file`
-        #  
-        # e.g. "deny:./blacklist.txt" 屏蔽`blacklist.txt`里的IP
-        # e.g. "accept:./whitelist.txt|deny_all" 仅允许`whitelist.txt`里的IP
+        #   `accept`: 如果IP在`file`中，接受返回的应答。
+        #   `deny`: 如果IP在`file`中，拒绝返回的应答。
+        #   `deny_all`: 无条件拒绝，用在最后，拒绝所有之前没有命中的应答。
+        #       相当于把默认处理方式改为`deny`，后不需要跟`file`。
+        #
+        # e.g. "deny:./blacklist.txt" 屏蔽`blacklist.txt`里的IP。
+        # e.g. "accept:./whitelist.txt|deny_all" 仅允许`whitelist.txt`里的IP。
         # e.g. "deny:./blacklist.txt|accept:./whitelist.txt|deny_all"
         ip_policies: "accept:./chn.list|deny_all"
 
         # 域名策略设定
         # 格式: "action:file|action:file|..."
         #
-        # 域名分流策略决定请求的域名被谁解析，可由多个策略构成，用`|`分割
-        # 处理流程从左至右，如果上一条策略没有命中，将匹配下一条
-        # 如果直到最后都没有命中任何策略，默认处理方式为`accept`
+        # 域名分流策略根据请求的域名决定本地服务器如何处理该请求。可由多个策略构成，用`|`分割。
+        # 处理流程从左至右，如果上一条策略没有命中，将匹配下一条。
+        # 如果直到最后都没有命中任何策略，默认为`允许本地服务器处理该请求`。
         #
-        # `file`为域名表的路径，域名表格式参见[这里](#域名表格式)
-        #
+        # `file`为域名表的路径。
         # `action`可以是
-        #   `force`: 如果域名在`file`中，强制该请求只由本地服务器解析(不会被远程服务器解析)
-        #       并且最终应答会无视其他所有匹配条件(IP，请求类型等)，强制接受
-        #   `accept`: 如果域名在`file`中，请求会送至本地服务器(同时也会送至远程服务器)
-        #   `deny`: 如果域名在`file`中，请求不会送至本地服务器(只由远程服务器解析)
-        #   `deny_all`: 无条件拒绝，用在最后，拒绝所有之前没有命中的应答
-        #       相当于把默认处理方式改为`deny`，后不需要跟`file`
-        # 
-        # e.g. "deny:./blacklist.txt" 屏蔽`blacklist.txt`里的域名，这些域名将由远程服务器解析
-        # e.g. "force:./whitelist.txt" 强制本地服务器解析`whitelist.txt`里的域名
-        # e.g. "force:./whitelist.txt|deny_all" 不在其中的域名会一定由远程服务器解析
+        #   `force`: 如果域名在`file`中，则强制本地服务器处理该请求(不会被远程服务器解析)。
+        #       并且最终应答会无视其他所有匹配条件(IP，请求类型等)，强制接受。
+        #   `accept`: 如果域名在`file`中，允许本地服务器处理该请求(同时也会送至远程服务器)。
+        #   `deny`: 如果域名在`file`中，禁止本地服务器处理该请求(仅由远程服务器解析)。
+        #   `deny_all`: 无条件拒绝，用在最后，拒绝所有之前没有命中的请求。
+        #       相当于把默认处理方式改为`禁止本地服务器处理该请求`，后不需要跟`file`
+        #
+        # e.g. "deny:./blacklist.txt" 屏蔽`blacklist.txt`里的域名，这些域名将由远程服务器解析。
+        # e.g. "force:./whitelist.txt" 强制本地服务器解析`whitelist.txt`里的域名。
+        # e.g. "force:./whitelist.txt|deny_all" 不在其中的域名会一定由远程服务器解析。
         # e.g. "force:./chn_domain.list|accept:./whitelist.txt|deny_all"
         domain_policies: "force:./chn_domain.list"
 
     # 远程服务器设定
     remote:
-        # 以下部分说明与 local 相同，参见上文
+        # 以下部分说明与 local 相同，参见上文。
         addr: "1.0.0.1:853"
-        protocol: "dot" 
-        socks5: "" 
+        protocol: "dot"
+        socks5: ""
         tcp:
             idle_timeout: 10
         dot:
-            server_name: "cloudflare-dns.com" 
+            server_name: "cloudflare-dns.com"
             idle_timeout: 10
         doh:
             url: "https://cloudflare-dns.com/dns-query"
 
-        # 延时启动时间 单位: 毫秒 
-        # 如果在设定时间后本地服务器无应答，则开始请求远程服务器
-        # 在等待中，如果本地服务器失败或应答被丢弃，会中止等待立即开始请求远程服务器
-        # 将该值设定为约120%的本地服务器的延时可显著降低请求远程服务器的次数
-        # 该选项能牺牲一点延时来降低设备最多一半的负载
+        # 延时启动时间 单位: 毫秒。
+        # 如果在设定时间后本地服务器无应答，则才开始请求远程服务器。
+        # 在等待中，如果本地服务器失败或应答被丢弃，会中止等待立即开始请求远程服务器。
+        # 将该值设定为约120%的本地服务器的延时可显著降低请求远程服务器的次数。
+        # 该选项能牺牲一点延时来降低设备最多一半的负载。
         # `0`表示禁用延时，请求将同步发送
-        delay_start: 50
+        delay_start: 0
 
-# 上游服务器ECS设定
-# 格式: `CIDR` 支持IPv6
-# 如果填入，发出至`local/remote`的请求将插入ECS信息
-# 如果来自下游的请求已包含ECS，则不会插入或复写
+# ECS设定
+# 格式: `CIDR` 支持IPv6。
+# 如果填入，发送的请求将插入ECS信息。
+# 如果来自下游的请求已包含ECS，则不会插入或复写。
 # e.g. "1.2.3.0/24"
 # e.g. "2001:dd8:1a::/48"
 ecs:
@@ -113,4 +107,4 @@ ecs:
 
 # CA证书设定
 ca:
-  path: "" # 证书文件的路径。证书需为PEM格式，可以包含多个PEM块(俗称ca-bundle)。留空默认使用系统证书
+  path: "" # 证书文件的路径。证书需为PEM格式，可以是ca-bundle。留空默认使用系统自带CA证书。
