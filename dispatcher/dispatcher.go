@@ -280,8 +280,6 @@ func noBlockNotify(c chan notification, n notification) {
 // Note: serveRawDNS will release q, qRawBuf.
 func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpool.MsgBuf) (*bufpool.MsgBuf, error) {
 	qRaw := qRawBuf.Bytes()
-	queryCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	requestLogger := d.getRequestLogger(q)
 
@@ -292,49 +290,71 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 	serveDNSWG.Add(1)
 	defer serveDNSWG.Done()
 
-	go func() {
-		doLocal, doRemote, forceLocal := d.selectUpstreams(q)
-		requestLogger.Debugf("serveDNS: selectUpstreams: dl: %v, fl: %v", doLocal, forceLocal)
+	doLocal, doRemote, forceLocal := d.selectUpstreams(q)
+	requestLogger.Debugf("serveDNS: selectUpstreams: dl: %v, fl: %v", doLocal, forceLocal)
 
-		upstreamWG := sync.WaitGroup{}
-		var localNotificationChan chan notification
+	upstreamWG := sync.WaitGroup{}
+	var localNotificationChan chan notification
 
-		// local
-		if doLocal {
-			localNotificationChan = getNotificationChan()
-			upstreamWG.Add(1)
-			go func() {
-				defer upstreamWG.Done()
+	// local
+	if doLocal {
+		localNotificationChan = getNotificationChan()
 
-				queryStart := time.Now()
-				rRaw, err := d.queryLocal(queryCtx, q, qRaw)
-				rtt := time.Since(queryStart).Milliseconds()
-				if err != nil {
-					if err != context.Canceled && err != context.DeadlineExceeded {
-						requestLogger.Warnf("serveDNS: local server failed after %dms: %v, ", rtt, err)
-					}
-					noBlockNotify(localNotificationChan, failed)
-					return
-				}
-
-				if !forceLocal && !d.acceptRawLocalRes(rRaw.Bytes(), requestLogger) {
-					requestLogger.Debugf("serveDNS: local result denied, rtt: %dms", rtt)
-					bufpool.ReleaseMsgBuf(rRaw)
-					noBlockNotify(localNotificationChan, failed)
-					return
-				}
-
-				select {
-				case resChan <- rRaw:
-					requestLogger.Debugf("serveDNS: local result accepted, rtt: %dms", rtt)
-				default:
-					bufpool.ReleaseMsgBuf(rRaw)
-					requestLogger.Debugf("serveDNS: local result dropped, rtt: %dms", rtt)
-				}
-				noBlockNotify(localNotificationChan, succeed)
-			}()
+		qRawToLocal, ecsAppended, err := getUpstreamRawMsg(q, qRaw, d.ecs.local, requestLogger)
+		if ecsAppended {
+			bufpool.ReleasePackBuf(qRawToLocal)
+		}
+		if err != nil {
+			requestLogger.Warnf("failed to append local ecs, %v", err)
 		}
 
+		upstreamWG.Add(1)
+		go func() {
+			defer upstreamWG.Done()
+
+			queryStart := time.Now()
+			rRaw, err := d.local.client.Exchange(ctx, qRawToLocal)
+			rtt := time.Since(queryStart).Milliseconds()
+			if err != nil {
+				if err != context.Canceled && err != context.DeadlineExceeded {
+					requestLogger.Warnf("serveDNS: local server failed after %dms: %v, ", rtt, err)
+				}
+				noBlockNotify(localNotificationChan, failed)
+				return
+			}
+
+			if !forceLocal && !d.acceptRawLocalRes(rRaw.Bytes(), requestLogger) {
+				requestLogger.Debugf("serveDNS: local result denied, rtt: %dms", rtt)
+				bufpool.ReleaseMsgBuf(rRaw)
+				noBlockNotify(localNotificationChan, failed)
+				return
+			}
+			requestLogger.Debugf("serveDNS: local result accepted, rtt: %dms", rtt)
+
+			select {
+			case resChan <- rRaw:
+			default:
+				bufpool.ReleaseMsgBuf(rRaw)
+			}
+			noBlockNotify(localNotificationChan, succeed)
+		}()
+	}
+
+	var qRawToRemote []byte
+	if doRemote {
+		var ecsAppended bool
+		var err error
+		qRawToRemote, ecsAppended, err = getUpstreamRawMsg(q, qRaw, d.ecs.remote, requestLogger)
+		if ecsAppended {
+			bufpool.ReleasePackBuf(qRawToRemote)
+		}
+		if err != nil {
+			requestLogger.Warnf("failed to append local ecs, %v", err)
+		}
+	}
+
+	// remote and cleaner
+	go func() {
 		// remote
 		if doRemote {
 			if doLocal && d.remote.delayStart > 0 {
@@ -350,7 +370,7 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 			}
 
 			queryStart := time.Now()
-			rRaw, err := d.queryRemote(queryCtx, q, qRaw)
+			rRaw, err := d.remote.client.Exchange(ctx, qRawToRemote)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
@@ -400,6 +420,25 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 	}
 }
 
+// getUpstreamRawMsg returns the raw msg for given ecs. If ecs is appended to q, ecsAppended will be true,
+// and b will be a new raw msg. b will always non-nil. If ecs is failed to append, b will be qRaw. err contains
+// info of error that occurd.
+func getUpstreamRawMsg(q *dns.Msg, qRaw []byte, ecs *edns0subnet, requestLogger *logrus.Entry) (b []byte, ecsAppended bool, err error) {
+	if ecs != nil {
+		qRawWithECS, err := appendECSIfNotExistAndPack(q, ecs)
+		if err != nil {
+			return qRaw, false, err
+		} else if qRawWithECS != nil {
+			// ecs appended
+			return qRawWithECS, true, nil
+		} else {
+			return qRaw, false, nil
+		}
+	} else {
+		return qRaw, false, nil
+	}
+}
+
 func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote, forceLocal bool) {
 	if d.local.client != nil {
 		doLocal = true
@@ -431,52 +470,24 @@ func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote, forceLocal 
 	return
 }
 
-func genFailureReply(q *dns.Msg) *bufpool.MsgBuf {
-	r := getMsg()
-	defer releaseMsg(r)
-	r.SetReply(q)
-	r.Rcode = dns.RcodeServerFailure
-
-	rRaw, err := bufpool.AcquireMsgBufAndPack(r)
-	if err != nil {
-		return nil // just ignore the err, it won't happen.
+func appendECSIfNotExistAndPack(q *dns.Msg, ecs *edns0subnet) ([]byte, error) {
+	qWithECS := appendECSIfNotExist(q, ecs)
+	if qWithECS != nil {
+		defer releaseMsg(qWithECS)
+		return bufpool.AcquirePackBufAndPack(qWithECS)
 	}
-	return rRaw
-}
-
-func (d *Dispatcher) queryUpstream(ctx context.Context, q *dns.Msg, qRaw []byte, u Upstream, ecs *edns0subnet) (rRaw *bufpool.MsgBuf, err error) {
-	if ecs != nil {
-		qWithECS, appended := appendECSIfNotExist(q, ecs)
-		if appended {
-			qRawWithECS, err := bufpool.AcquirePackBufAndPack(qWithECS)
-			if err != nil {
-				return nil, fmt.Errorf("pack ecs appended msg err: %v", err)
-			}
-			defer bufpool.ReleasePackBuf(qRawWithECS)
-			defer releaseMsg(qWithECS)
-			return u.Exchange(ctx, qRawWithECS)
-		}
-	}
-	return u.Exchange(ctx, qRaw)
-}
-
-func (d *Dispatcher) queryLocal(ctx context.Context, q *dns.Msg, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
-	return d.queryUpstream(ctx, q, qRaw, d.local.client, d.ecs.local)
-}
-
-func (d *Dispatcher) queryRemote(ctx context.Context, q *dns.Msg, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
-	return d.queryUpstream(ctx, q, qRaw, d.remote.client, d.ecs.remote)
+	return nil, nil
 }
 
 // both q and ecs shouldn't be nil, the returned m is a shadow copy of q if ecs is appended.
-func appendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg, appended bool) {
+func appendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg) {
 	opt := q.IsEdns0()
 	if opt == nil { // we need a new opt
 		qWithECS := getMsg()
 		//shadow copy
 		*qWithECS = *q
 		qWithECS.Extra = append(q.Extra, ecs.getOpt())
-		return qWithECS, true
+		return qWithECS
 	}
 
 	optContainsECS := false // check if msg q already has a ECS section
@@ -488,22 +499,23 @@ func appendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg, appended boo
 	}
 
 	if !optContainsECS {
-		qCopy := getMsg()
+		qWithECS := getMsg()
 		//shadow copy
-		*qCopy = *q
+		*qWithECS = *q
 
 		// deep copy Extra
-		qCopy.Extra = append(q.Extra[:0:0], q.Extra...)
-		opt := qCopy.IsEdns0()
+		qWithECS.Extra = append(q.Extra[:0:0], q.Extra...)
+		opt := qWithECS.IsEdns0()
 		if opt == nil {
 			panic("broken copy or corrupted data")
 		}
 		opt.Option = append(opt.Option, ecs.getSubnet())
-		return qCopy, true
+		return qWithECS
 	}
 
-	return nil, false
+	return nil
 }
+
 func (d *Dispatcher) acceptLocalRes(res *dns.Msg, requestLogger *logrus.Entry) (ok bool) {
 	if res == nil {
 		requestLogger.Debug("acceptLocalRes: false: result is nil")

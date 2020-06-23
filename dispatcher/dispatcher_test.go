@@ -135,7 +135,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 	switch mode {
 	case benchFlow:
 		for i := 0; i < b.N; i++ {
-			rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), false)
+			rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -150,7 +150,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), false)
+					rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw))
 					if err != nil {
 						atomic.AddInt32(&ec, 1)
 						// panic("err")
@@ -167,7 +167,7 @@ func bench(testID string, mode uint8, b *testing.B, domain string, ll, rl int, l
 		var ec int32
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw), false)
+				rRaw, err := d.serveRawDNS(context.Background(), q.CopyTo(getMsg()), bufpool.AcquireMsgBufAndCopy(qRaw))
 				if err != nil {
 					atomic.AddInt32(&ec, 1)
 				}
