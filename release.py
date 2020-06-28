@@ -86,12 +86,13 @@ def go_build():
                                  compresslevel=5) as zf:
                 zf.write(bin_filename)
                 zf.write('README.md')
-                zf.write('config-example.yaml')
+                zf.write('config.yaml')
                 zf.write('chn.list')
                 zf.write('chn_domain.list')
                 zf.write('LICENSE')
                 if os_env['GOOS'] == 'windows':
-                    zf.write('scripts\windows\mos-chinadns-WinSW.xml','mos-chinadns-WinSW.xml')
+                    zf.write('scripts\windows\mos-chinadns-winsw.xml','mos-chinadns-winsw.xml')
+                    zf.write('scripts\windows\service_control.bat','service_control.bat')
 
         except subprocess.CalledProcessError as e:
             logger.error(f'build {zip_filename} failed: {e.args}')
