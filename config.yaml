@@ -13,7 +13,7 @@ server:
     local:
         addr: "223.5.5.5:53" # 服务器地址。留空将禁用该服务器。
         protocol: "udp" # 服务器协议。`tcp`|`udp`|`doh`|`dot`其中之一。留空默认`udp`。
-        socks5: "" # socks5代理服务器地址，不支持udp协议，不支持认证。
+        socks5: "" # socks5代理服务器地址。注意：暂不支持udp协议，不支持认证。
 
         # TCP设定，仅`protocol`为`tcp`时有用。
         tcp:
