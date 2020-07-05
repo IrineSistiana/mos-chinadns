@@ -22,6 +22,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/notification"
 	"io/ioutil"
 	"net"
 	"strconv"
@@ -29,8 +30,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/domainlist"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 
 	"github.com/miekg/dns"
 
@@ -238,55 +238,13 @@ func isUnusualType(q *dns.Msg) bool {
 // Note: q will be unsafe to modify even after ServeDNS is returned.
 // (Some goroutine may still be running even after ServeDNS is returned)
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-
-	qRaw, err := bufpool.AcquireMsgBufAndPack(q) // serveRawDNS will release qRaw
-	if err != nil {
-		return nil, fmt.Errorf("invalid dns msg q: pack err: %v", err)
-	}
-
-	qCopy := getMsg()
-	*qCopy = *q // shadow copy, serveRawDNS will release qCopy
-
-	rRaw, err := d.serveRawDNS(ctx, qCopy, qRaw)
-	if err != nil {
-		return nil, err
-	}
-	defer bufpool.ReleaseMsgBuf(rRaw)
-
-	r = getMsg()
-	err = r.Unpack(rRaw.Bytes())
-
-	if err != nil {
-		releaseMsg(r)
-		return nil, fmt.Errorf("invalid reply: unpack err: %v", err)
-	}
-	return r, nil
+	return d.serveDNS(ctx, q)
 }
 
-type notification int
-
-const (
-	failed notification = iota
-	succeed
-)
-
-func noBlockNotify(c chan notification, n notification) {
-	select {
-	case c <- n:
-	default:
-		return
-	}
-}
-
-// serveRawDNS: The error will be ErrServerFailed or ctx err
-// Note: serveRawDNS will release q, qRawBuf.
-func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpool.MsgBuf) (*bufpool.MsgBuf, error) {
-	qRaw := qRawBuf.Bytes()
-
-	requestLogger := d.getRequestLogger(q)
-
-	resChan := getResChan()
-	upstreamFailedNotificationChan := getNotificationChan()
+func (d *Dispatcher) serveDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+	requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
+	resChan := pool.GetResChan()
+	upstreamFailedNotificationChan := pool.GetNotificationChan()
 
 	serveDNSWG := sync.WaitGroup{}
 	serveDNSWG.Add(1)
@@ -296,63 +254,49 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 	requestLogger.Debugf("serveDNS: selectUpstreams: dl: %v, fl: %v", doLocal, forceLocal)
 
 	upstreamWG := sync.WaitGroup{}
-	var localNotificationChan chan notification
+	var localNotificationChan chan notification.Signal
 
 	// local
 	if doLocal {
-		localNotificationChan = getNotificationChan()
-
-		qRawToLocal, ecsAppended, err := getUpstreamRawMsg(q, qRaw, d.ecs.local, requestLogger)
-		if ecsAppended {
-			bufpool.ReleasePackBuf(qRawToLocal)
-		}
-		if err != nil {
-			requestLogger.Warnf("failed to append local ecs, %v", err)
-		}
-
+		localNotificationChan = pool.GetNotificationChan()
 		upstreamWG.Add(1)
 		go func() {
 			defer upstreamWG.Done()
 
+			var qToLocal *dns.Msg
+			qToLocal = q
+			if d.ecs.local != nil {
+				qWithLocalECS := copyAndAppendECSIfNotExist(q, d.ecs.local)
+				if qWithLocalECS != nil { // ecs appended
+					qToLocal = qWithLocalECS
+				}
+			}
+
 			queryStart := time.Now()
-			rRaw, err := d.local.client.Exchange(ctx, qRawToLocal)
+			r, err := d.local.client.Exchange(ctx, qToLocal)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
-					requestLogger.Warnf("serveDNS: local server failed after %dms: %v, ", rtt, err)
+					requestLogger.Warnf("serveDNS: local server failed after %dms: %v", rtt, err)
 				}
-				noBlockNotify(localNotificationChan, failed)
+				notification.NoBlockNotify(localNotificationChan, notification.Failed)
 				return
 			}
 
-			if !forceLocal && !d.acceptRawLocalRes(rRaw.Bytes(), requestLogger) {
+			if !forceLocal && !d.acceptLocalRes(r, requestLogger) {
+				pool.ReleaseMsg(r)
 				requestLogger.Debugf("serveDNS: local result denied, rtt: %dms", rtt)
-				bufpool.ReleaseMsgBuf(rRaw)
-				noBlockNotify(localNotificationChan, failed)
+				notification.NoBlockNotify(localNotificationChan, notification.Failed)
 				return
 			}
+
 			requestLogger.Debugf("serveDNS: local result accepted, rtt: %dms", rtt)
-
 			select {
-			case resChan <- rRaw:
+			case resChan <- r:
 			default:
-				bufpool.ReleaseMsgBuf(rRaw)
 			}
-			noBlockNotify(localNotificationChan, succeed)
+			notification.NoBlockNotify(localNotificationChan, notification.Succeed)
 		}()
-	}
-
-	var qRawToRemote []byte
-	if doRemote {
-		var ecsAppended bool
-		var err error
-		qRawToRemote, ecsAppended, err = getUpstreamRawMsg(q, qRaw, d.ecs.remote, requestLogger)
-		if ecsAppended {
-			bufpool.ReleasePackBuf(qRawToRemote)
-		}
-		if err != nil {
-			requestLogger.Warnf("failed to append local ecs, %v", err)
-		}
 	}
 
 	// remote and cleaner
@@ -360,32 +304,40 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 		// remote
 		if doRemote {
 			if doLocal && d.remote.delayStart > 0 {
-				delayTimer := getTimer(d.remote.delayStart)
-				defer releaseTimer(delayTimer)
+				delayTimer := pool.GetTimer(d.remote.delayStart)
+				defer pool.ReleaseTimer(delayTimer)
 				select {
 				case n := <-localNotificationChan:
-					if n == succeed {
+					if n == notification.Succeed {
 						goto skipRemote
 					}
 				case <-delayTimer.C:
 				}
 			}
 
+			var qToRemote *dns.Msg
+			qToRemote = q
+			if d.ecs.remote != nil { // ecs appended
+				qWithRemoteECS := copyAndAppendECSIfNotExist(q, d.ecs.remote)
+				if qWithRemoteECS != nil { // ecs appended
+					qToRemote = qWithRemoteECS
+				}
+			}
+
 			queryStart := time.Now()
-			rRaw, err := d.remote.client.Exchange(ctx, qRawToRemote)
+			r, err := d.remote.client.Exchange(ctx, qToRemote)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
 					requestLogger.Warnf("serveDNS: remote server failed after %dms: %v", rtt, err)
 				}
-				return
+				goto skipRemote
 			}
-			requestLogger.Debugf("serveDNS: get reply from remote, rtt: %dms", rtt)
 
+			requestLogger.Debugf("serveDNS: get reply from remote, rtt: %dms", rtt)
 			select {
-			case resChan <- rRaw:
+			case resChan <- r:
 			default:
-				bufpool.ReleaseMsgBuf(rRaw)
 			}
 		}
 	skipRemote:
@@ -395,49 +347,28 @@ func (d *Dispatcher) serveRawDNS(ctx context.Context, q *dns.Msg, qRawBuf *bufpo
 		// avoid below select{} choose upstreamFailedNotificationChan
 		// if both resChan and upstreamFailedNotificationChan are selectable
 		if len(resChan) == 0 {
-			noBlockNotify(upstreamFailedNotificationChan, failed)
+			notification.NoBlockNotify(upstreamFailedNotificationChan, notification.Failed)
 		}
 
 		// serveDNS is done
 		serveDNSWG.Wait()
 
 		// time to finial cleanup
-		releaseMsg(q)
-		bufpool.ReleaseMsgBuf(qRawBuf)
-		releaseRequestLogger(requestLogger)
-		releaseResChan(resChan)
-		releaseNotificationChan(upstreamFailedNotificationChan)
+		pool.ReleaseRequestLogger(requestLogger)
+		pool.ReleaseResChan(resChan)
+		pool.ReleaseNotificationChan(upstreamFailedNotificationChan)
 		if localNotificationChan != nil {
-			releaseNotificationChan(localNotificationChan)
+			pool.ReleaseNotificationChan(localNotificationChan)
 		}
 	}()
 
 	select {
-	case rRaw := <-resChan:
-		return rRaw, nil
+	case m := <-resChan:
+		return m, nil
 	case <-upstreamFailedNotificationChan:
 		return nil, ErrServerFailed
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	}
-}
-
-// getUpstreamRawMsg returns the raw msg for given ecs. If ecs is appended to q, ecsAppended will be true,
-// and b will be a new raw msg. b will always non-nil. If ecs is failed to append, b will be qRaw. err contains
-// info of error that occurd.
-func getUpstreamRawMsg(q *dns.Msg, qRaw []byte, ecs *edns0subnet, requestLogger *logrus.Entry) (b []byte, ecsAppended bool, err error) {
-	if ecs != nil {
-		qRawWithECS, err := appendECSIfNotExistAndPack(q, ecs)
-		if err != nil {
-			return qRaw, false, err
-		} else if qRawWithECS != nil {
-			// ecs appended
-			return qRawWithECS, true, nil
-		} else {
-			return qRaw, false, nil
-		}
-	} else {
-		return qRaw, false, nil
 	}
 }
 
@@ -472,50 +403,30 @@ func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote, forceLocal 
 	return
 }
 
-func appendECSIfNotExistAndPack(q *dns.Msg, ecs *edns0subnet) ([]byte, error) {
-	qWithECS := appendECSIfNotExist(q, ecs)
-	if qWithECS != nil {
-		defer releaseMsg(qWithECS)
-		return bufpool.AcquirePackBufAndPack(qWithECS)
-	}
-	return nil, nil
-}
-
-// both q and ecs shouldn't be nil, the returned m is a shadow copy of q if ecs is appended.
-func appendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg) {
+// both q and ecs shouldn't be nil, the returned m is a deep copy of q if ecs is appended.
+func copyAndAppendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg) {
 	opt := q.IsEdns0()
-	if opt == nil { // we need a new opt
-		qWithECS := getMsg()
-		//shadow copy
-		*qWithECS = *q
-		qWithECS.Extra = append(q.Extra, ecs.getOpt())
-		return qWithECS
+	if opt == nil { // no opt, we need a new opt
+		qCopy := q.Copy()
+		qCopy.Extra = append(q.Extra, ecs.getOpt())
+		return qCopy
 	}
 
-	optContainsECS := false // check if msg q already has a ECS section
+	// check if msg opt already has a ECS section
 	for o := range opt.Option {
 		if opt.Option[o].Option() == dns.EDNS0SUBNET {
-			optContainsECS = true
-			break
+			return nil // do nothing
 		}
 	}
 
-	if !optContainsECS {
-		qWithECS := getMsg()
-		//shadow copy
-		*qWithECS = *q
-
-		// deep copy Extra
-		qWithECS.Extra = append(q.Extra[:0:0], q.Extra...)
-		opt := qWithECS.IsEdns0()
-		if opt == nil {
-			panic("broken copy or corrupted data")
-		}
-		opt.Option = append(opt.Option, ecs.getSubnet())
-		return qWithECS
+	// no ECS in opt, append it
+	qCopy := q.Copy()
+	opt = qCopy.IsEdns0()
+	if opt == nil {
+		panic("broken copy or corrupted data")
 	}
-
-	return nil
+	opt.Option = append(opt.Option, ecs.getSubnet())
+	return qCopy
 }
 
 func (d *Dispatcher) acceptLocalRes(res *dns.Msg, requestLogger *logrus.Entry) (ok bool) {
@@ -603,19 +514,6 @@ func (d *Dispatcher) acceptLocalRes(res *dns.Msg, requestLogger *logrus.Entry) (
 	return true
 }
 
-// check if local result is ok to accept, res can be nil.
-func (d *Dispatcher) acceptRawLocalRes(rRaw []byte, requestLogger *logrus.Entry) (ok bool) {
-	res := getMsg()
-	defer releaseMsg(res)
-	err := res.Unpack(rRaw)
-	if err != nil {
-		requestLogger.Debugf("acceptRawLocalRes: false, Unpack: %v", err)
-		return false
-	}
-
-	return d.acceptLocalRes(res, requestLogger)
-}
-
 func caPath2Pool(ca string) (*x509.CertPool, error) {
 	pem, err := ioutil.ReadFile(ca)
 	if err != nil {
@@ -627,167 +525,4 @@ func caPath2Pool(ca string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("AppendCertsFromPEM: no certificate was successfully parsed in %s", ca)
 	}
 	return rootCAs, nil
-}
-
-type policyAction uint8
-
-const (
-	policyActionForceStr   string = "force"
-	policyActionAcceptStr  string = "accept"
-	policyActionDenyStr    string = "deny"
-	policyActionDenyAllStr string = "deny_all"
-
-	policyActionForce policyAction = iota
-	policyActionAccept
-	policyActionDeny
-	policyActionDenyAll
-	policyActionMissing
-)
-
-var convIPPolicyActionStr = map[string]policyAction{
-	policyActionAcceptStr:  policyActionAccept,
-	policyActionDenyStr:    policyActionDeny,
-	policyActionDenyAllStr: policyActionDenyAll,
-}
-
-var convDomainPolicyActionStr = map[string]policyAction{
-	policyActionForceStr:   policyActionForce,
-	policyActionAcceptStr:  policyActionAccept,
-	policyActionDenyStr:    policyActionDeny,
-	policyActionDenyAllStr: policyActionDenyAll,
-}
-
-type rawPolicy struct {
-	action policyAction
-	args   string
-}
-
-type ipPolicies struct {
-	policies []ipPolicy
-}
-
-type ipPolicy struct {
-	action policyAction
-	list   *netlist.List
-}
-
-type domainPolicies struct {
-	policies []domainPolicy
-}
-
-type domainPolicy struct {
-	action policyAction
-	list   *domainlist.List
-}
-
-func convPoliciesStr(s string, f map[string]policyAction) ([]rawPolicy, error) {
-	ps := make([]rawPolicy, 0)
-
-	policiesStr := strings.Split(s, "|")
-	for i := range policiesStr {
-		pStr := strings.SplitN(policiesStr[i], ":", 2)
-
-		p := rawPolicy{}
-		action, ok := f[pStr[0]]
-		if !ok {
-			return nil, fmt.Errorf("unknown action [%s]", pStr[0])
-		}
-		p.action = action
-
-		if len(pStr) == 2 {
-			p.args = pStr[1]
-		}
-
-		ps = append(ps, p)
-	}
-
-	return ps, nil
-}
-
-func newIPPolicies(psString string, entry *logrus.Entry) (*ipPolicies, error) {
-	psArgs, err := convPoliciesStr(psString, convIPPolicyActionStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid ip policies string, %w", err)
-	}
-	ps := &ipPolicies{
-		policies: make([]ipPolicy, 0),
-	}
-
-	for i := range psArgs {
-		p := ipPolicy{}
-		p.action = psArgs[i].action
-
-		file := psArgs[i].args
-		if len(file) != 0 {
-			list, err := netlist.NewListFromFile(file)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load ip file from %s, %w", file, err)
-			}
-			p.list = list
-			entry.Infof("newIPPolicies: ip list %s loaded, length %d", file, list.Len())
-		}
-
-		ps.policies = append(ps.policies, p)
-	}
-
-	return ps, nil
-}
-
-// ps can not be nil
-func (ps *ipPolicies) check(ip netlist.IPv6) policyAction {
-	for p := range ps.policies {
-		if ps.policies[p].action == policyActionDenyAll {
-			return policyActionDeny
-		}
-
-		if ps.policies[p].list != nil && ps.policies[p].list.Contains(ip) {
-			return ps.policies[p].action
-		}
-	}
-
-	return policyActionMissing
-}
-
-func newDomainPolicies(psString string, entry *logrus.Entry) (*domainPolicies, error) {
-	psArgs, err := convPoliciesStr(psString, convDomainPolicyActionStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid domain policies string, %w", err)
-	}
-	ps := &domainPolicies{
-		policies: make([]domainPolicy, 0),
-	}
-
-	for i := range psArgs {
-		p := domainPolicy{}
-		p.action = psArgs[i].action
-
-		file := psArgs[i].args
-		if len(file) != 0 {
-			list, err := domainlist.LoadFormFile(file)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load domain file from %s, %w", file, err)
-			}
-			p.list = list
-			entry.Infof("newDomainPolicies: domain list %s loaded, length %d", file, list.Len())
-		}
-
-		ps.policies = append(ps.policies, p)
-	}
-
-	return ps, nil
-}
-
-// check: ps can not be nil
-func (ps *domainPolicies) check(fqdn string) policyAction {
-	for p := range ps.policies {
-		if ps.policies[p].action == policyActionDenyAll {
-			return policyActionDeny
-		}
-
-		if ps.policies[p].list != nil && ps.policies[p].list.Has(fqdn) {
-			return ps.policies[p].action
-		}
-	}
-
-	return policyActionMissing
 }

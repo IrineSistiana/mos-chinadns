@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"github.com/miekg/dns"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -73,6 +74,16 @@ func main() {
 		go printStatus(entry, time.Second*30)
 	default:
 		logger.SetLevel(logrus.InfoLevel)
+	}
+
+	// dev only
+	if len(*pprofAddr) != 0 {
+		entry.Infof("pprof is listening at %s", *pprofAddr)
+		go func() {
+			if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+				entry.Fatal("pprof backend is exited: %v", err)
+			}
+		}()
 	}
 
 	// show version
