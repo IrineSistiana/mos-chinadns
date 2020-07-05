@@ -15,26 +15,37 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package bufpool
+package pool
 
 import (
-	"strings"
+	"github.com/miekg/dns"
+	"github.com/sirupsen/logrus"
 	"sync"
 )
 
-var (
-	defaultStringBuilderPool = sync.Pool{
-		New: func() interface{} {
-			return new(strings.Builder)
-		},
-	}
-)
-
-func AcquireStringBuilder() *strings.Builder {
-	return defaultStringBuilderPool.Get().(*strings.Builder)
+var requestLoggerPool = sync.Pool{
+	New: func() interface{} {
+		f := make(logrus.Fields, 3+2) // default is three fields, we add 2 more
+		f["id"] = nil
+		f["question"] = nil
+		e := &logrus.Entry{
+			Data: f,
+		}
+		return e
+	},
 }
 
-func ReleaseStringBuilder(builder *strings.Builder) {
-	builder.Reset()
-	defaultStringBuilderPool.Put(builder)
+func GetRequestLogger(logger *logrus.Logger, q *dns.Msg) *logrus.Entry {
+	entry := requestLoggerPool.Get().(*logrus.Entry)
+	entry.Logger = logger
+	entry.Data["id"] = q.Id
+	entry.Data["question"] = q.Question
+	return entry
+}
+
+func ReleaseRequestLogger(entry *logrus.Entry) {
+	entry.Data["id"] = nil
+	entry.Data["question"] = nil
+	entry.Logger = nil
+	requestLoggerPool.Put(entry)
 }

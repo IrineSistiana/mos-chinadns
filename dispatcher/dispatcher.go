@@ -234,7 +234,9 @@ func isUnusualType(q *dns.Msg) bool {
 	return q.Opcode != dns.OpcodeQuery || len(q.Question) != 1 || q.Question[0].Qclass != dns.ClassINET || (q.Question[0].Qtype != dns.TypeA && q.Question[0].Qtype != dns.TypeAAAA)
 }
 
-// ServeDNS send q to upstreams and return first valid result.
+// ServeDNS sends q to upstreams and return first valid result.
+// Note: q will be unsafe to modify even after ServeDNS is returned.
+// (Some goroutine may still be running even after ServeDNS is returned)
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 
 	qRaw, err := bufpool.AcquireMsgBufAndPack(q) // serveRawDNS will release qRaw

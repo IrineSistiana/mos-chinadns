@@ -34,8 +34,7 @@ import (
 
 	"golang.org/x/net/http2"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 	"github.com/miekg/dns"
 	"golang.org/x/net/proxy"
 )
@@ -49,17 +48,17 @@ const (
 	dohIOTimeout        = time.Second * 10
 )
 
-// Upstream reprenses a dns upsteam
+// Upstream represents a dns upstream
 type Upstream interface {
-	// Exchange sends qRaw to upstream and return its reply. For better preformence, release the rRaw.
-	Exchange(ctx context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error)
+	// Exchange sends qRaw to upstream and return its reply. For better performance, release the rRaw.
+	Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error)
 }
 
 // upstreamCommon represents a udp/tcp/tls server
 type upstreamCommon struct {
 	dialNewConn func() (net.Conn, error)
-	writeMsg    func(c io.Writer, msg []byte) (int, error)
-	readMsg     func(c io.Reader) (msg *bufpool.MsgBuf, brokenDataLeft int, n int, err error)
+	writeMsg    func(c io.Writer, m *dns.Msg) (int, error)
+	readMsg     func(c io.Reader) (m *dns.Msg, brokenDataLeft int, n int, err error)
 
 	cp *connPool
 }
@@ -179,25 +178,21 @@ var (
 	errTooManyConcurrentQueries = errors.New("too many concurrent queries")
 )
 
-func (u *upstreamWithLimit) Exchange(ctx context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
+func (u *upstreamWithLimit) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 	if u.bk.acquire() == false {
 		return nil, errTooManyConcurrentQueries
 	}
 	defer u.bk.release()
-	return u.u.Exchange(ctx, qRaw)
+	return u.u.Exchange(ctx, q)
 }
 
-func (u *upstreamCommon) Exchange(ctx context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
-	return u.exchange(ctx, qRaw, false)
+func (u *upstreamCommon) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
+	return u.exchange(ctx, q, false)
 }
 
-func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn bool) (rRaw *bufpool.MsgBuf, err error) {
+func (u *upstreamCommon) exchange(ctx context.Context, q *dns.Msg, forceNewConn bool) (r *dns.Msg, err error) {
 	if err = ctx.Err(); err != nil {
 		return nil, err
-	}
-
-	if len(qRaw) < 12 {
-		return nil, dns.ErrShortRead
 	}
 
 	var isNewConn bool
@@ -223,31 +218,30 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 		dc.msgID++
 	}
 
-	// this once is to make sure that the following
-	// dc.Conn.SetDeadline wouldn't be called after dc is put into connPool
-	qRawWithNewID := bufpool.AcquireMsgBufAndCopy(qRaw)
-	defer bufpool.ReleaseMsgBuf(qRawWithNewID)
-	originalID := utils.ExchangeMsgID(dc.msgID, qRawWithNewID.Bytes())
+	qWithNewID := pool.GetMsg()
+	defer pool.ReleaseMsg(qWithNewID)
+	*qWithNewID = *q // shadow copy, we just want to change its ID
+	qWithNewID.Id = dc.msgID
 
 	// write first
 	dc.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
-	_, err = u.writeMsg(dc.Conn, qRawWithNewID.Bytes())
+	_, err = u.writeMsg(dc.Conn, qWithNewID)
 	if err != nil { // write err typically is fatal err
 		dc.Close()
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, err
 		}
 		// ctx is not done yet, open a new conn and try again.
-		return u.exchange(ctx, qRaw, true)
+		return u.exchange(ctx, q, true)
 	}
 
 	var n int
 	dc.SetReadDeadline(time.Now().Add(generalReadTimeout))
 	// if we need to empty the conn (some data of previous reply)
 	if dc.frameLeft > 0 {
-		buf := bufpool.AcquireMsgBuf(dc.frameLeft)
-		n, err = io.ReadFull(dc, buf.Bytes())
-		bufpool.ReleaseMsgBuf(buf)
+		buf := pool.GetMsgBuf(dc.frameLeft)
+		n, err = io.ReadFull(dc, buf)
+		pool.ReleaseMsgBuf(buf)
 		if n > 0 {
 			dc.lastRead = time.Now()
 			dc.frameLeft = dc.frameLeft - n
@@ -258,7 +252,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, qRaw []byte, forceNewConn
 	}
 
 read:
-	rRaw, dc.frameLeft, n, err = u.readMsg(dc.Conn)
+	r, dc.frameLeft, n, err = u.readMsg(dc.Conn)
 	if n > 0 {
 		dc.lastRead = time.Now()
 	}
@@ -266,8 +260,7 @@ read:
 		goto readErr
 	}
 
-	if utils.GetMsgID(rRaw.Bytes()) != dc.msgID {
-		bufpool.ReleaseMsgBuf(rRaw)
+	if r.Id != dc.msgID {
 		if !isNewConn {
 			// this connection is reused, data might be the reply
 			// of a previous qRaw, not this qRaw.
@@ -282,8 +275,8 @@ read:
 	}
 
 	u.cp.put(dc)
-	utils.SetMsgID(originalID, rRaw.Bytes())
-	return rRaw, nil
+	r.Id = q.Id // change the ID back
+	return r, nil
 
 readErr:
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -306,7 +299,7 @@ readErr:
 		return nil, err
 	}
 	// ctx is not done yet, open a new conn and try again.
-	return u.exchange(ctx, qRaw, true)
+	return u.exchange(ctx, q, true)
 }
 
 type connPool struct {
@@ -489,49 +482,53 @@ func newDoHUpstream(urlStr string, dialContext func(ctx context.Context, network
 }
 
 //Exchange: dot upstream has its own context to control timeout, it will not follow the ctx.
-func (u *upstreamDoH) Exchange(_ context.Context, qRaw []byte) (rRaw *bufpool.MsgBuf, err error) {
-	if len(qRaw) < 12 {
-		return nil, dns.ErrShortRead // avoid panic when access msg id in m[0] and m[1]
-	}
+func (u *upstreamDoH) Exchange(_ context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), dohIOTimeout)
 	defer cancel()
-	qRawWithNewID := bufpool.AcquireMsgBufAndCopy(qRaw)
-	defer bufpool.ReleaseMsgBuf(qRawWithNewID)
 
 	// In order to maximize HTTP cache friendliness, DoH clients using media
 	// formats that include the ID field from the DNS message header, such
 	// as "application/dns-message", SHOULD use a DNS ID of 0 in every DNS
 	// request.
 	// https://tools.ietf.org/html/rfc8484 4.1
-	oldID := utils.ExchangeMsgID(0, qRawWithNewID.Bytes())
+	qWithNewID := pool.GetMsg()
+	defer pool.ReleaseMsg(qWithNewID)
+	*qWithNewID = *q // shadow copy, we just want to change its ID
+	qWithNewID.Id = 0
+
+	buf := pool.AcquirePackBuf()
+	defer pool.ReleasePackBuf(buf)
+
+	rRaw, err := qWithNewID.PackBuffer(buf)
+	if err != nil {
+		return nil, fmt.Errorf("invalid msg q: %v", err)
+	}
 
 	// Padding characters for base64url MUST NOT be included.
 	// See: https://tools.ietf.org/html/rfc8484 6
 	// That's why we use base64.RawURLEncoding
-	urlBuilder := bufpool.AcquireStringBuilder()
-	defer bufpool.ReleaseStringBuilder(urlBuilder)
+	urlBuilder := pool.AcquireStringBuilder()
+	defer pool.ReleaseStringBuilder(urlBuilder)
 	urlBuilder.Write(u.preparedURL)
 	encoder := base64.NewEncoder(base64.RawURLEncoding, urlBuilder)
-	encoder.Write(qRawWithNewID.Bytes())
+	encoder.Write(rRaw)
 	encoder.Close()
 
-	rRaw, err = u.doHTTP(ctx, urlBuilder.String())
+	r, err = u.doHTTP(ctx, urlBuilder.String())
 	if err != nil {
 		return nil, fmt.Errorf("doHTTP: %w", err)
 	}
 
-	// change the id back
-	if utils.GetMsgID(rRaw.Bytes()) != 0 { // check msg id
-		bufpool.ReleaseMsgBuf(rRaw)
+	if r.Id != 0 { // check msg id
 		return nil, dns.ErrId
 	}
-	utils.SetMsgID(oldID, rRaw.Bytes())
-	return rRaw, nil
+	// change the id back
+	r.Id = q.Id
+	return r, nil
 }
 
-func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*bufpool.MsgBuf, error) {
-
+func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("interal err: NewRequestWithContext: %w", err)
@@ -559,31 +556,35 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*bufpool.MsgBuf, 
 		return nil, fmt.Errorf("content-length %d is smaller than dns header size 12", resp.ContentLength)
 	}
 
-	var msgBuf *bufpool.MsgBuf
+	var buf []byte
 	if resp.ContentLength > 12 {
-		msgBuf = bufpool.AcquireMsgBuf(int(resp.ContentLength))
-		_, err = io.ReadFull(resp.Body, msgBuf.Bytes())
+		buf = pool.GetMsgBuf(int(resp.ContentLength))
+		defer pool.ReleaseMsgBuf(buf)
+		_, err = io.ReadFull(resp.Body, buf)
 		if err != nil {
-			bufpool.ReleaseMsgBuf(msgBuf)
 			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
 		}
 	} else { // resp.ContentLength = -1, unknown length
-		buf := bufpool.AcquireBytesBuf()
-		defer bufpool.ReleaseBytesBuf(buf)
-		n, err := buf.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize+1))
+		bb := pool.AcquireBytesBuf()
+		defer pool.ReleaseBytesBuf(bb)
+		n, err := bb.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize+1))
 		if n > dns.MaxMsgSize {
-			return nil, fmt.Errorf("response body is too large, first 1kb data: %s", string(buf.Bytes()[:1024]))
+			return nil, fmt.Errorf("response body is too large, first 1kb data: %s", string(bb.Bytes()[:1024]))
 		}
 		if err != nil {
 			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
 		}
-		if buf.Len() < 12 {
+		if bb.Len() < 12 {
 			return nil, dns.ErrShortRead
 		}
-		msgBuf = bufpool.AcquireMsgBufAndCopy(buf.Bytes())
+		buf = bb.Bytes()
 	}
 
-	return msgBuf, nil
+	r := new(dns.Msg)
+	if err := r.Unpack(buf); err != nil {
+		return nil, fmt.Errorf("invalid reply: %v", err)
+	}
+	return r, nil
 }
 
 func getUpstreamDialContextFunc(network, dstAddress, sock5Address string) (func(ctx context.Context, _, _ string) (net.Conn, error), error) {

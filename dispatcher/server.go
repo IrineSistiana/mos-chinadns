@@ -20,10 +20,11 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"github.com/miekg/dns"
 	"net"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 )
 
 const (
@@ -62,35 +63,26 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 
 				for {
 					c.SetReadDeadline(time.Now().Add(serverTimeout))
-					qRaw, _, _, err := readMsgFromTCP(c)
+					q, _, _, err := readMsgFromTCP(c)
 					if err != nil {
-						return
-					}
-
-					q := getMsg()
-					err = q.Unpack(qRaw.Bytes())
-					if err != nil { // invalid msg, drop it
-						bufpool.ReleaseMsgBuf(qRaw)
-						releaseMsg(q)
-						return // this tcp conn may invalid, close it.
+						return // read err, close the conn
 					}
 
 					go func() {
 						queryCtx, cancel := context.WithTimeout(tcpConnCtx, queryTimeout)
 						defer cancel()
 
-						requestLogger := d.getRequestLogger(q)
-						defer releaseRequestLogger(requestLogger)
+						requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
+						defer pool.ReleaseRequestLogger(requestLogger)
 
-						rRaw, err := d.serveRawDNS(queryCtx, q, qRaw)
+						r, err := d.serveDNS(queryCtx, q)
 						if err != nil {
 							requestLogger.Warnf("query failed, %v", err)
 							return // ignore it, result is empty
 						}
-						defer bufpool.ReleaseMsgBuf(rRaw)
 
 						c.SetWriteDeadline(time.Now().Add(serverTimeout))
-						_, err = writeMsgToTCP(c, rRaw.Bytes())
+						_, err = writeMsgToTCP(c, r)
 						if err != nil {
 							requestLogger.Warnf("failed to send reply back, writeMsgToTCP: %v", err)
 						}
@@ -125,31 +117,36 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				continue
 			}
 
-			q := getMsg()
+			q := new(dns.Msg)
 			err = q.Unpack(readBuf[:n])
 			if err != nil {
-				releaseMsg(q)
 				continue
 			}
 
-			// copy it to a new and maybe smaller buf for the new goroutine
-			qRaw := bufpool.AcquireMsgBufAndCopy(readBuf[:n])
 			go func() {
 				queryCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 				defer cancel()
 
-				requestLogger := d.getRequestLogger(q)
-				defer releaseRequestLogger(requestLogger)
+				requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
+				defer pool.ReleaseRequestLogger(requestLogger)
 
-				rRaw, err := d.serveRawDNS(queryCtx, q, qRaw)
+				r, err := d.serveDNS(queryCtx, q)
 				if err != nil {
 					requestLogger.Warnf("query failed, %v", err)
 					return
 				}
-				defer bufpool.ReleaseMsgBuf(rRaw)
+
+				buf := pool.AcquirePackBuf()
+				defer pool.ReleasePackBuf(buf)
+
+				rRaw, err := r.PackBuffer(buf)
+				if err != nil {
+					requestLogger.Warnf("failed to send reply back, PackBuffer, %v", err)
+					return
+				}
 
 				l.SetWriteDeadline(time.Now().Add(serverTimeout))
-				_, err = l.WriteTo(rRaw.Bytes(), from)
+				_, err = l.WriteTo(rRaw, from)
 				if err != nil {
 					requestLogger.Warnf("failed to send reply back, WriteTo: %v", err)
 				}

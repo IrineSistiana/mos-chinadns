@@ -15,26 +15,24 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package bufpool
+package pool
 
 import (
-	"bytes"
 	"sync"
 )
 
-var (
-	defaultBytesBufPool = sync.Pool{
-		New: func() interface{} {
-			return new(bytes.Buffer)
-		},
-	}
-)
-
-func AcquireBytesBuf() *bytes.Buffer {
-	return defaultBytesBufPool.Get().(*bytes.Buffer)
+var packBufPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 512) // 512b is big enough for most dns msg.
+	},
 }
 
-func ReleaseBytesBuf(buf *bytes.Buffer) {
-	buf.Reset()
-	defaultBytesBufPool.Put(buf)
+// AcquirePackBuf should only be used by dns.Msg.PackBuffer()
+func AcquirePackBuf() []byte {
+	return packBufPool.Get().([]byte)
+}
+
+// ReleasePackBuf should only releases the buf returned by dns.Msg.PackBuffer()
+func ReleasePackBuf(buf []byte) {
+	packBufPool.Put(buf)
 }

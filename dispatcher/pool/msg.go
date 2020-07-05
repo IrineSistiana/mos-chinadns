@@ -15,42 +15,27 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package bufpool
+package pool
 
 import (
-	"fmt"
-	"sync"
-
 	"github.com/miekg/dns"
+	"sync"
 )
 
-var packBufPool = sync.Pool{}
-
-// AcquirePackBuf should only be used by dns.Msg.PackBuffer()
-func AcquirePackBuf() []byte {
-	buf, _ := packBufPool.Get().([]byte)
-	return buf // it's ok that buf is nil
+var dnsMsgPool = sync.Pool{
+	New: func() interface{} {
+		return new(dns.Msg)
+	},
 }
 
-func AcquirePackBufAndPack(m *dns.Msg) ([]byte, error) {
-	buf := AcquirePackBuf()
-	mRaw, err := m.PackBuffer(buf)
-	if err != nil {
-		ReleasePackBuf(buf)
-		return nil, err
-	}
-
-	if len(mRaw) > dns.MaxMsgSize { // seems PackBuffer won't check msg size
-		ReleasePackBuf(mRaw)
-		return nil, fmt.Errorf("msg wire size %d is bigger than dns.MaxMsgSize", len(mRaw))
-	}
-	return mRaw, nil
+func GetMsg() *dns.Msg {
+	return dnsMsgPool.Get().(*dns.Msg)
 }
 
-// ReleasePackBuf should only releases the buf returned by dns.Msg.PackBuffer()
-func ReleasePackBuf(buf []byte) {
-	bufCap := cap(buf)
-	if cap(buf) > 0 {
-		packBufPool.Put(buf[:bufCap])
-	}
+func ReleaseMsg(m *dns.Msg) {
+	m.Question = nil
+	m.Answer = nil
+	m.Ns = nil
+	m.Extra = nil
+	dnsMsgPool.Put(m)
 }

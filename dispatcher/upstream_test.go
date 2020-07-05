@@ -33,12 +33,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 )
 
 func Test_upstream(t *testing.T) {
-
 	testUpstream := func(name string, u Upstream) {
 		wg := sync.WaitGroup{}
 		errs := make([]error, 0)
@@ -63,21 +61,10 @@ func Test_upstream(t *testing.T) {
 
 				q := new(dns.Msg)
 				q.SetQuestion("example.com.", dns.TypeA)
-				qRaw, err := q.Pack()
-				if err != nil {
-					logErr(err)
-					return
-				}
+
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 				defer cancel()
-				rRaw, err := u.Exchange(ctx, qRaw)
-				if err != nil {
-					logErr(err)
-					return
-				}
-				defer bufpool.ReleaseMsgBuf(rRaw)
-				r := new(dns.Msg)
-				err = r.Unpack(rRaw.Bytes())
+				_, err := u.Exchange(ctx, q)
 				if err != nil {
 					logErr(err)
 					return
@@ -93,18 +80,14 @@ func Test_upstream(t *testing.T) {
 	testUpstreamTimeout := func(name string, u Upstream) {
 		q := new(dns.Msg)
 		q.SetQuestion("example.com.", dns.TypeA)
-		qRaw, err := q.Pack()
-		if err != nil {
-			t.Fatal(err)
-			return
-		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*50)
 		defer cancel()
-		rRaw, err := u.Exchange(ctx, qRaw)
+		r, err := u.Exchange(ctx, q)
 		if err != nil {
 			return
 		}
-		t.Fatalf("%s: err here, got %v", name, rRaw)
+		t.Fatalf("%s: err here, got %v", name, r)
 	}
 
 	testServer := &vServer{ip: net.IPv4(1, 2, 3, 4), latency: 0}
