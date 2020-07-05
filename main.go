@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"github.com/miekg/dns"
 	"net"
 	"os"
 	"os/signal"
@@ -31,11 +32,7 @@ import (
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher"
 
-	"github.com/miekg/dns"
-
-	// dev only
-	// "net/http"
-	// _ "net/http/pprof"
+	_ "net/http/pprof"
 
 	"github.com/sirupsen/logrus"
 )
@@ -49,14 +46,15 @@ var (
 	dir                 = flag.String("dir", "", "[path] change working directory to here")
 	dirFollowExecutable = flag.Bool("dir2exe", false, "change working directory to the executable that started the current process")
 
-	debug = flag.Bool("debug", false, "more log")
-	quiet = flag.Bool("quiet", false, "no log")
+	debug     = flag.Bool("debug", false, "more log")
+	quiet     = flag.Bool("quiet", false, "no log")
+	pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
 
 	cpu         = flag.Int("cpu", runtime.NumCPU(), "the maximum number of CPUs that can be executing simultaneously")
-	showVersion = flag.Bool("v", false, "show verison")
+	showVersion = flag.Bool("v", false, "show version info")
 
-	probeDoTTimeout = flag.String("probe-dot-timeout", "", "[ip:port] probe dot server's idel timeout")
-	probeTCPTimeout = flag.String("probe-tcp-timeout", "", "[ip:port] probe tcp server's idel timeout")
+	probeDoTTimeout = flag.String("probe-dot-timeout", "", "[ip:port] probe dot server's idle timeout")
+	probeTCPTimeout = flag.String("probe-tcp-timeout", "", "[ip:port] probe tcp server's idle timeout")
 )
 
 func main() {
@@ -72,8 +70,6 @@ func main() {
 		logger.SetLevel(logrus.ErrorLevel)
 	case *debug:
 		logger.SetLevel(logrus.DebugLevel)
-		// dev only
-		// go http.ListenAndServe("localhost:8080", nil)
 		go printStatus(entry, time.Second*30)
 	default:
 		logger.SetLevel(logrus.InfoLevel)
