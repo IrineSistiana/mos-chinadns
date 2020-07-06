@@ -5,6 +5,9 @@ bind:
 
 # 分流器设定
 dispatcher:
+    cache: # 缓存设定
+        size: 0 # 缓存大小，单位: 条。0表示禁用缓存。如512表示最多缓存512条DNS应答。
+        min_ttl: 300 # 最小生存时间。单位: 秒。
     max_concurrent_queries: 150 # 最大并发查询数。默认150。
 
 # 上游服务器设定

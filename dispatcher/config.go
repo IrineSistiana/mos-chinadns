@@ -32,6 +32,10 @@ type Config struct {
 	} `yaml:"bind"`
 
 	Dispatcher struct {
+		Cache struct {
+			Size   int    `yaml:"size"`
+			MinTTL uint32 `yaml:"min_ttl"`
+		} `yaml:"cache"`
 		MaxConcurrentQueries int `yaml:"max_concurrent_queries"`
 	} `yaml:"dispatcher"`
 

@@ -22,7 +22,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/cache"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/notification"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"io/ioutil"
 	"net"
 	"strconv"
@@ -54,6 +56,11 @@ var (
 type Dispatcher struct {
 	entry                *logrus.Entry
 	maxConcurrentQueries int
+
+	cache struct {
+		*cache.Cache
+		minTTL uint32
+	}
 
 	local struct {
 		client Upstream
@@ -110,6 +117,11 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 		d.maxConcurrentQueries = 150
 	} else {
 		d.maxConcurrentQueries = conf.Dispatcher.MaxConcurrentQueries
+	}
+
+	if conf.Dispatcher.Cache.Size > 0 {
+		d.cache.Cache = cache.New(conf.Dispatcher.Cache.Size)
+		d.cache.minTTL = conf.Dispatcher.Cache.MinTTL
 	}
 
 	var rootCAs *x509.CertPool
@@ -238,10 +250,53 @@ func isUnusualType(q *dns.Msg) bool {
 // Note: q will be unsafe to modify even after ServeDNS is returned.
 // (Some goroutine may still be running even after ServeDNS is returned)
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	return d.serveDNS(ctx, q)
+	requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
+	defer pool.ReleaseRequestLogger(requestLogger)
+
+	hasECS := isMsgHasECS(q) // don't use cache for msg with ECS
+
+	if !hasECS {
+		if r = d.tryGetFromCache(q); r != nil {
+			requestLogger.Debug("cache hit")
+			return r, nil
+		}
+	}
+
+	r, err = d.exchangeDNS(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+
+	if !hasECS {
+		d.tryAddToCache(r)
+	}
+	return r, nil
 }
 
-func (d *Dispatcher) serveDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+func (d *Dispatcher) tryGetFromCache(q *dns.Msg) (r *dns.Msg) {
+	if d.cache.Cache != nil && len(q.Question) == 1 { // must have only one question
+		return d.cache.Get(q.Question[0], q.Id)
+	}
+	return nil
+}
+
+// tryAddToCache adds r to cache and modifies its ttl
+func (d *Dispatcher) tryAddToCache(r *dns.Msg) {
+	// must only have one question and Rcode must be success
+	// TODO: make cache handle ECS
+	if d.cache.Cache != nil && len(r.Question) == 1 && r.Rcode == dns.RcodeSuccess {
+		ttl := utils.GetAnswerMinTTL(r)
+		if ttl < d.cache.minTTL {
+			ttl = d.cache.minTTL
+		}
+		expireAt := time.Now().Add(time.Duration(ttl) * time.Second)
+		d.cache.Add(r.Question[0], r, expireAt)
+
+		utils.SetAnswerTTL(r, ttl) // if r is added to cache, modify its ttl as well.
+	}
+}
+
+func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 	requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
 	resChan := pool.GetResChan()
 	upstreamFailedNotificationChan := pool.GetNotificationChan()
@@ -251,7 +306,7 @@ func (d *Dispatcher) serveDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 	defer serveDNSWG.Done()
 
 	doLocal, doRemote, forceLocal := d.selectUpstreams(q)
-	requestLogger.Debugf("serveDNS: selectUpstreams: dl: %v, fl: %v", doLocal, forceLocal)
+	requestLogger.Debugf("exchangeDNS: selectUpstreams: dl: %v, fl: %v", doLocal, forceLocal)
 
 	upstreamWG := sync.WaitGroup{}
 	var localNotificationChan chan notification.Signal
@@ -277,7 +332,7 @@ func (d *Dispatcher) serveDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
-					requestLogger.Warnf("serveDNS: local server failed after %dms: %v", rtt, err)
+					requestLogger.Warnf("exchangeDNS: local server failed after %dms: %v", rtt, err)
 				}
 				notification.NoBlockNotify(localNotificationChan, notification.Failed)
 				return
@@ -285,12 +340,12 @@ func (d *Dispatcher) serveDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 
 			if !forceLocal && !d.acceptLocalRes(r, requestLogger) {
 				pool.ReleaseMsg(r)
-				requestLogger.Debugf("serveDNS: local result denied, rtt: %dms", rtt)
+				requestLogger.Debugf("exchangeDNS: local result denied, rtt: %dms", rtt)
 				notification.NoBlockNotify(localNotificationChan, notification.Failed)
 				return
 			}
 
-			requestLogger.Debugf("serveDNS: local result accepted, rtt: %dms", rtt)
+			requestLogger.Debugf("exchangeDNS: local result accepted, rtt: %dms", rtt)
 			select {
 			case resChan <- r:
 			default:
@@ -329,12 +384,12 @@ func (d *Dispatcher) serveDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
-					requestLogger.Warnf("serveDNS: remote server failed after %dms: %v", rtt, err)
+					requestLogger.Warnf("exchangeDNS: remote server failed after %dms: %v", rtt, err)
 				}
 				goto skipRemote
 			}
 
-			requestLogger.Debugf("serveDNS: get reply from remote, rtt: %dms", rtt)
+			requestLogger.Debugf("exchangeDNS: get reply from remote, rtt: %dms", rtt)
 			select {
 			case resChan <- r:
 			default:
@@ -350,7 +405,7 @@ func (d *Dispatcher) serveDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 			notification.NoBlockNotify(upstreamFailedNotificationChan, notification.Failed)
 		}
 
-		// serveDNS is done
+		// exchangeDNS is done
 		serveDNSWG.Wait()
 
 		// time to finial cleanup
@@ -401,6 +456,21 @@ func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote, forceLocal 
 		}
 	}
 	return
+}
+
+func isMsgHasECS(m *dns.Msg) bool {
+	opt := m.IsEdns0()
+	if opt == nil { // no opt, no ecs
+		return false
+	}
+
+	// find ecs in opt
+	for o := range opt.Option {
+		if opt.Option[o].Option() == dns.EDNS0SUBNET {
+			return true // do nothing
+		}
+	}
+	return false
 }
 
 // both q and ecs shouldn't be nil, the returned m is a deep copy of q if ecs is appended.

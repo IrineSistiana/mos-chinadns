@@ -75,7 +75,7 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 						requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
 						defer pool.ReleaseRequestLogger(requestLogger)
 
-						r, err := d.serveDNS(queryCtx, q)
+						r, err := d.ServeDNS(queryCtx, q)
 						if err != nil {
 							requestLogger.Warnf("query failed, %v", err)
 							return // ignore it, result is empty
@@ -130,7 +130,7 @@ func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error 
 				requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
 				defer pool.ReleaseRequestLogger(requestLogger)
 
-				r, err := d.serveDNS(queryCtx, q)
+				r, err := d.ServeDNS(queryCtx, q)
 				if err != nil {
 					requestLogger.Warnf("query failed, %v", err)
 					return
