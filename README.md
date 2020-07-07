@@ -1,6 +1,8 @@
 # mos-chinadns
 
-功能、教程以及手册，详见：[wiki](https://github.com/IrineSistiana/mos-chinadns/wiki)。
+全部功能、教程和使用手册，详见：[wiki](https://github.com/IrineSistiana/mos-chinadns/wiki)
+
+下载地址、更新日志，详见：[release](https://github.com/IrineSistiana/mos-chinadns/releases)
 
 ---
 
