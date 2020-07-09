@@ -47,14 +47,14 @@ func New(size int) *Cache {
 
 // Add adds a copy of r to the cache
 func (c *Cache) Add(q dns.Question, r *dns.Msg, expireAt time.Time) {
-	if r == nil || time.Now().After(expireAt) {
+	if r == nil {
 		return
 	}
 
 	c.l.Lock()
 	defer c.l.Unlock()
 
-	if c.writeCounter > c.size/2 {
+	if c.writeCounter >= c.size/2 {
 		c.scanAndEvict()
 	}
 	empty := c.size - len(c.m)
@@ -65,6 +65,7 @@ func (c *Cache) Add(q dns.Question, r *dns.Msg, expireAt time.Time) {
 	rCopy := pool.GetMsg()
 	r.CopyTo(rCopy)
 	c.m[q] = &elem{m: rCopy, expiredAt: expireAt}
+	c.writeCounter++
 }
 
 func (c *Cache) Get(q dns.Question, id uint16) *dns.Msg {
@@ -93,6 +94,14 @@ func (c *Cache) Len() int {
 	defer c.l.RUnlock()
 
 	return len(c.m)
+}
+
+func (c *Cache) Reset() {
+	c.l.Lock()
+	defer c.l.Unlock()
+
+	c.writeCounter = 0
+	c.m = make(map[dns.Question]*elem, c.size)
 }
 
 func (c *Cache) evict(n int) {

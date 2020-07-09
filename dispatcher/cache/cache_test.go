@@ -29,27 +29,44 @@ func TestCache(t *testing.T) {
 	c := New(size)
 
 	// add
-	q := dns.Question{Name: "example.com."}
-	c.Add(q, nil, time.Now().Add(time.Minute)) // add a nil msg
-	if c.Len() != 0 {
-		t.Fatal("nil msg was added to cache")
-	}
-	c.Add(q, new(dns.Msg), time.Time{}) // add a expired msg
-	if c.Len() != 0 {
-		t.Fatal("expired msg was added to cache")
-	}
+	{
+		q := dns.Question{Name: "example.com."}
+		c.Add(q, nil, time.Now().Add(time.Minute)) // add a nil msg
+		if c.Len() != 0 {
+			t.Fatal("nil msg was added to cache")
+		}
 
-	for i := 0; i < size*2; i++ {
-		q := dns.Question{Name: strconv.Itoa(i)}
-		c.Add(q, new(dns.Msg), time.Now().Add(time.Minute))
-	}
-	if c.Len() != size {
-		t.Fatal("cache is bigger than its size limit")
+		for i := 0; i < size*2; i++ {
+			q := dns.Question{Name: strconv.Itoa(i)}
+			c.Add(q, new(dns.Msg), time.Now().Add(time.Minute))
+		}
+		if c.Len() != size {
+			t.Fatal("cache is bigger than its size limit")
+		}
+
+		// add expired items into cache
+		c.Reset()
+		for i := 0; i < size/2; i++ {
+			q := dns.Question{Name: strconv.Itoa(i)}
+			c.Add(q, new(dns.Msg), time.Now().Add(-time.Hour))
+		}
+
+		// This add shell trigger scanAndEvict and remove size/2 elems and add 1 elem.
+		c.Add(q, new(dns.Msg), time.Now())
+		if c.Len() != 1 {
+			t.Fatal("scanAndEvict isn't triggered on time")
+		}
 	}
 
 	// get
-	c.Add(q, new(dns.Msg), time.Now().Add(time.Minute)) // add a nil msg
-	if c.Get(q, 0) == nil {
-		t.Fatal("cache Get failed")
+	{
+		c.Reset()
+		q := dns.Question{Name: "example.com."}
+		m := new(dns.Msg)
+		m.SetQuestion("example.com.", dns.TypeA)
+		c.Add(q, m, time.Now().Add(time.Minute)) // add a nil msg
+		if mOut := c.Get(q, m.Id); mOut.String() != m.String() {
+			t.Fatal("cache Get failed")
+		}
 	}
 }
