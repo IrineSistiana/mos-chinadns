@@ -58,8 +58,9 @@ type Config struct {
 	} `yaml:"server"`
 
 	ECS struct {
-		Local  string `yaml:"local"`
-		Remote string `yaml:"remote"`
+		Local          string `yaml:"local"`
+		Remote         string `yaml:"remote"`
+		ForceOverwrite bool   `yaml:"force_overwrite"`
 	} `yaml:"ecs"`
 
 	CA struct {

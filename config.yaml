@@ -101,12 +101,12 @@ server:
 # ECS设定
 # 格式: `CIDR` 支持IPv6。
 # 如果填入，发送的请求将插入ECS信息。
-# 如果来自下游的请求已包含ECS，则不会插入或复写。
 # e.g. "1.2.3.0/24"
 # e.g. "2001:dd8:1a::/48"
 ecs:
   local: ""
   remote: ""
+  force_overwrite: false # 强制复写下游已包含ECS的请求
 
 # CA证书设定
 ca:

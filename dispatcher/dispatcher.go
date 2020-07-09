@@ -78,35 +78,10 @@ type Dispatcher struct {
 	}
 
 	ecs struct {
-		local  *edns0subnet
-		remote *edns0subnet
+		local          *dns.EDNS0_SUBNET
+		remote         *dns.EDNS0_SUBNET
+		forceOverwrite bool
 	}
-}
-
-type edns0subnet struct {
-	subnet *dns.EDNS0_SUBNET
-	opt    *dns.OPT
-}
-
-func initEDNS0Subnet(subnet *dns.EDNS0_SUBNET) *edns0subnet {
-	e := new(edns0subnet)
-	e.subnet = subnet
-
-	o := new(dns.OPT)
-	o.SetUDPSize(MaxUDPSize)
-	o.Hdr.Name = "."
-	o.Hdr.Rrtype = dns.TypeOPT
-	o.Option = []dns.EDNS0{subnet}
-	e.opt = o
-	return e
-}
-
-func (ecs *edns0subnet) getSubnet() *dns.EDNS0_SUBNET {
-	return ecs.subnet
-}
-
-func (ecs *edns0subnet) getOpt() *dns.OPT {
-	return ecs.opt
 }
 
 // InitDispatcher inits a dispatcher from configuration
@@ -182,7 +157,7 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing local ECS subnet, %w", err)
 		}
-		d.ecs.local = initEDNS0Subnet(subnet)
+		d.ecs.local = subnet
 		d.entry.Info("initDispatcher: local server ECS enabled")
 	}
 
@@ -191,9 +166,11 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing remote ECS subnet, %w", err)
 		}
-		d.ecs.remote = initEDNS0Subnet(subnet)
+		d.ecs.remote = subnet
 		d.entry.Info("initDispatcher: remote server ECS enabled")
 	}
+
+	d.ecs.forceOverwrite = conf.ECS.ForceOverwrite
 
 	return d, nil
 }
@@ -321,7 +298,7 @@ func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, err
 			var qToLocal *dns.Msg
 			qToLocal = q
 			if d.ecs.local != nil {
-				qWithLocalECS := copyAndAppendECSIfNotExist(q, d.ecs.local)
+				qWithLocalECS := appendECS(q, d.ecs.local, d.ecs.forceOverwrite)
 				if qWithLocalECS != nil { // ecs appended
 					qToLocal = qWithLocalECS
 				}
@@ -372,8 +349,8 @@ func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, err
 
 			var qToRemote *dns.Msg
 			qToRemote = q
-			if d.ecs.remote != nil { // ecs appended
-				qWithRemoteECS := copyAndAppendECSIfNotExist(q, d.ecs.remote)
+			if d.ecs.remote != nil {
+				qWithRemoteECS := appendECS(q, d.ecs.remote, d.ecs.forceOverwrite)
 				if qWithRemoteECS != nil { // ecs appended
 					qToRemote = qWithRemoteECS
 				}
@@ -467,35 +444,44 @@ func isMsgHasECS(m *dns.Msg) bool {
 	// find ecs in opt
 	for o := range opt.Option {
 		if opt.Option[o].Option() == dns.EDNS0SUBNET {
-			return true // do nothing
+			return true
 		}
 	}
 	return false
 }
 
-// both q and ecs shouldn't be nil, the returned m is a deep copy of q if ecs is appended.
-func copyAndAppendECSIfNotExist(q *dns.Msg, ecs *edns0subnet) (m *dns.Msg) {
-	opt := q.IsEdns0()
-	if opt == nil { // no opt, we need a new opt
-		qCopy := q.Copy()
-		qCopy.Extra = append(q.Extra, ecs.getOpt())
-		return qCopy
-	}
-
-	// check if msg opt already has a ECS section
-	for o := range opt.Option {
-		if opt.Option[o].Option() == dns.EDNS0SUBNET {
+// appendECS appends ecs to q. The returned m is a deep copy of q if ecs is appended.
+func appendECS(q *dns.Msg, ecs *dns.EDNS0_SUBNET, forceOverwrite bool) (m *dns.Msg) {
+	if isMsgHasECS(q) {
+		if !forceOverwrite {
 			return nil // do nothing
 		}
 	}
 
-	// no ECS in opt, append it
+	// append or overwrite ecs
 	qCopy := q.Copy()
-	opt = qCopy.IsEdns0()
-	if opt == nil {
-		panic("broken copy or corrupted data")
+
+	opt := qCopy.IsEdns0()
+	if opt == nil { // no opt, we need a new opt
+		o := new(dns.OPT)
+		o.SetUDPSize(MaxUDPSize)
+		o.Hdr.Name = "."
+		o.Hdr.Rrtype = dns.TypeOPT
+		o.Option = []dns.EDNS0{ecs}
+		qCopy.Extra = append(q.Extra, o)
+		return qCopy
 	}
-	opt.Option = append(opt.Option, ecs.getSubnet())
+
+	// overwrite
+	for o := range opt.Option {
+		if opt.Option[o].Option() == dns.EDNS0SUBNET {
+			opt.Option[o] = ecs
+			return qCopy
+		}
+	}
+
+	// append
+	opt.Option = append(opt.Option, ecs)
 	return qCopy
 }
 
