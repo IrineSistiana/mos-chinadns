@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"github.com/miekg/dns"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -33,7 +32,9 @@ import (
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher"
 
-	_ "net/http/pprof"
+	//DEBUG ONLY
+	//_ "net/http/pprof"
+	//"net/http"
 
 	"github.com/sirupsen/logrus"
 )
@@ -47,15 +48,17 @@ var (
 	dir                 = flag.String("dir", "", "[path] change working directory to here")
 	dirFollowExecutable = flag.Bool("dir2exe", false, "change working directory to the executable that started the current process")
 
-	debug     = flag.Bool("debug", false, "more log")
-	quiet     = flag.Bool("quiet", false, "no log")
-	pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
+	debug = flag.Bool("debug", false, "more log")
+	quiet = flag.Bool("quiet", false, "no log")
 
 	cpu         = flag.Int("cpu", runtime.NumCPU(), "the maximum number of CPUs that can be executing simultaneously")
 	showVersion = flag.Bool("v", false, "show version info")
 
 	probeDoTTimeout = flag.String("probe-dot-timeout", "", "[ip:port] probe dot server's idle timeout")
 	probeTCPTimeout = flag.String("probe-tcp-timeout", "", "[ip:port] probe tcp server's idle timeout")
+
+	//DEBUG ONLY
+	//pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
 )
 
 func main() {
@@ -76,15 +79,15 @@ func main() {
 		logger.SetLevel(logrus.InfoLevel)
 	}
 
-	// dev only
-	if len(*pprofAddr) != 0 {
-		entry.Infof("pprof is listening at %s", *pprofAddr)
-		go func() {
-			if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
-				entry.Fatal("pprof backend is exited: %v", err)
-			}
-		}()
-	}
+	//DEBUG ONLY
+	//if len(*pprofAddr) != 0 {
+	//	entry.Infof("pprof is listening at %s", *pprofAddr)
+	//	go func() {
+	//		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+	//			entry.Fatal("pprof backend is exited: %v", err)
+	//		}
+	//	}()
+	//}
 
 	// show version
 	if *showVersion {
