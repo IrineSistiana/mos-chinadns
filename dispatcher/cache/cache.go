@@ -70,20 +70,24 @@ func (c *Cache) Add(q dns.Question, r *dns.Msg, expireAt time.Time) {
 
 func (c *Cache) Get(q dns.Question, id uint16) *dns.Msg {
 	c.l.RLock()
-	defer c.l.RUnlock()
+	e, ok := c.m[q]
+	c.l.RUnlock()
 
-	if e, ok := c.m[q]; ok {
+	if ok {
 		ttl := e.expiredAt.Sub(time.Now())
 		if ttl < time.Second { // expired
 			pool.ReleaseMsg(e.m)
+
+			c.l.Lock()
 			delete(c.m, q)
-		} else {
-			r := new(dns.Msg)
-			e.m.CopyTo(r)
-			utils.SetAnswerTTL(r, uint32(ttl/time.Second)) // set rr ttl sections
-			r.Id = id
-			return r
+			c.l.Unlock()
+			return nil
 		}
+		r := new(dns.Msg)
+		e.m.CopyTo(r)
+		utils.SetAnswerTTL(r, uint32(ttl/time.Second)) // set rr ttl sections
+		r.Id = id
+		return r
 	}
 
 	return nil // not in the cache
