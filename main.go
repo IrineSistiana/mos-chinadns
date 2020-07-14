@@ -151,32 +151,10 @@ func main() {
 		entry.Fatalf("main: can not load config file, %v", err)
 	}
 
-	d, err := dispatcher.InitDispatcher(c, entry)
-	if err != nil {
-		entry.Fatalf("main: init dispatcher: %v", err)
-	}
-
-	startServerExitWhenFailed := func(network string) {
-		entry.Infof("main: %s server started", network)
-		if err := d.ListenAndServe(network, c.Bind.Addr, dispatcher.MaxUDPSize); err != nil {
-			entry.Fatalf("main: %s server exited with err: %v", network, err)
-		} else {
-			entry.Infof("main: %s server exited", network)
-			os.Exit(0)
-		}
-	}
-
-	switch c.Bind.Protocol {
-	case "all", "":
-		go startServerExitWhenFailed("tcp")
-		go startServerExitWhenFailed("udp")
-	case "udp":
-		go startServerExitWhenFailed("udp")
-	case "tcp":
-		go startServerExitWhenFailed("tcp")
-	default:
-		entry.Fatalf("main: unknown bind protocol: %s", c.Bind.Protocol)
-	}
+	go func() {
+		err := dispatcher.StartServer(c, entry)
+		entry.Fatalf("main: StartServer: %v", err)
+	}()
 
 	//wait signals
 	osSignals := make(chan os.Signal, 1)
