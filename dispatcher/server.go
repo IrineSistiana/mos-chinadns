@@ -20,20 +20,21 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"net"
+	"time"
+
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
-	"net"
-	"time"
 )
 
 const (
 	serverTimeout = time.Second * 30
 )
 
+// StartServer start the server
 func StartServer(c *Config, entry *logrus.Entry) error {
-
 	d, err := InitDispatcher(c, entry)
 	if err != nil {
 		return fmt.Errorf("init dispatcher failed, %v", err)
@@ -159,7 +160,7 @@ func (d *Dispatcher) StartUDPServer(network, addr string) error {
 	return d.StartUDPServerAt(l)
 }
 
-// StartUDPServer starts a udp dns server at net.PacketConn. Will always return a non-nil err.
+// StartUDPServerAt starts a udp dns server at net.PacketConn. Will always return a non-nil err.
 // The max UDP package size is dispatcher.MaxUDPSize.
 // To close the server, close the l.
 func (d *Dispatcher) StartUDPServerAt(l net.PacketConn) error {
