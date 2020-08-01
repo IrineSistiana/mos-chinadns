@@ -206,7 +206,12 @@ func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err 
 
 func (d *Dispatcher) tryGetFromCache(q *dns.Msg) (r *dns.Msg) {
 	if d.cache.Cache != nil && len(q.Question) == 1 { // must have only one question
-		return d.cache.Get(q.Question[0], q.Id)
+		r := d.cache.Get(q.Question[0])
+		if r != nil {
+			r.Id = q.Id
+			return r
+		}
+		return nil
 	}
 	return nil
 }
