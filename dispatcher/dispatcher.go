@@ -235,8 +235,8 @@ func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, err
 	serveDNSWG.Add(1)
 	defer serveDNSWG.Done()
 
-	doLocal, doRemote, forceLocal := d.selectUpstreams(q)
-	requestLogger.Debugf("exchangeDNS: selectUpstreams: dl: %v, fl: %v", doLocal, forceLocal)
+	doLocal, doRemote := d.selectUpstreams(q)
+	requestLogger.Debugf("exchangeDNS: selectUpstreams: local: %v, remote: %v", doLocal, doRemote)
 
 	upstreamWG := sync.WaitGroup{}
 	var localNotificationChan chan notification.Signal
@@ -268,11 +268,14 @@ func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, err
 				return
 			}
 
-			if !forceLocal && !d.checkLocalRes(r, requestLogger) {
-				pool.ReleaseMsg(r)
-				requestLogger.Debugf("exchangeDNS: local result denied, rtt: %dms", rtt)
-				notification.NoBlockNotify(localNotificationChan, notification.Failed)
-				return
+			// Only fliter local result when both local and remote servers are queried.
+			if doLocal && doRemote {
+				if d.checkLocalRes(r, requestLogger) == false {
+					pool.ReleaseMsg(r)
+					requestLogger.Debugf("exchangeDNS: local result denied, rtt: %dms", rtt)
+					notification.NoBlockNotify(localNotificationChan, notification.Failed)
+					return
+				}
 			}
 
 			requestLogger.Debugf("exchangeDNS: local result accepted, rtt: %dms", rtt)
@@ -357,33 +360,29 @@ func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, err
 	}
 }
 
-func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote, forceLocal bool) {
+func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote bool) {
+	var localOnly bool = false
+
 	if d.local.client != nil {
-		doLocal = true
-		if isUnusualType(q) {
-			doLocal = !d.local.denyUnusualTypes
-		} else {
-			if d.local.domainPolicies != nil {
-				p := d.local.domainPolicies.check(q.Question[0].Name)
-				switch p {
-				case policyActionForce:
-					doLocal = true
-					forceLocal = true
-				case policyActionAccept:
-					doLocal = true
-				case policyActionDeny:
-					doLocal = false
-				}
+		switch {
+		case isUnusualType(q) && d.local.denyUnusualTypes == true: // drop unusual type
+			doLocal = false
+		case d.local.domainPolicies != nil: // match domain policies
+			p := d.local.domainPolicies.check(q.Question[0].Name)
+			switch p {
+			case policyActionForce:
+				doLocal = true
+				localOnly = true
+			case policyActionAccept:
+				doLocal = true
+			case policyActionDeny:
+				doLocal = false
 			}
 		}
 	}
 
-	if d.remote.client != nil {
+	if d.remote.client != nil && !localOnly {
 		doRemote = true
-		switch {
-		case forceLocal:
-			doRemote = false
-		}
 	}
 	return
 }
