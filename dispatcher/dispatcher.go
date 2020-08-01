@@ -383,6 +383,8 @@ func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote bool) {
 			case policyActionDeny:
 				doLocal = false
 			}
+		default:
+			doLocal = true
 		}
 	}
 
