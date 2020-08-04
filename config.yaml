@@ -33,14 +33,15 @@ server:
             url: "https://223.5.5.5/dns-query" # [必需] DoH的URL。
 
         # IP策略设定
-        # 格式: "action:file|action:file|..."
         #
-        # IP策略决定local返回的结果能否被接受。可由多个策略构成，用`|`分割，
-        # 处理流程从左至右，如果上一条策略没有命中，将匹配下一条。
-        # 如果直到最后都没有命中任何策略，默认接受。
+        # IP策略将在同时请求了local和remote时，决定local返回的结果能否被接受。
+        # 如果只请求了local(因为domain_policies策略或只配置了local服务器)，则IP策略不会生效。
+        # 可由多个策略构成，用`|`分割，处理流程从左至右，如果上一条策略没有命中，将继续匹配下一条。
+        # 如果直到最后都没有命中任何策略，默认`接受local返回的结果`。
         #
-        # `file`为IP表文件的路径。
-        # `action`可以是：
+        # 格式: "action:file|action:file|action:file|..."
+        # `file`为IP表文件的路径。注意: Windows平台不支持绝对路径。
+        # `action`是策略，可以是：
         #   `accept`: 如果IP在`file`中，接受。
         #   `deny`: 如果IP在`file`中，拒绝并丢弃。
         #   `deny_all`: 无条件拒绝，用在最后，拒绝直到最后都没有命中任何策略的结果。
@@ -49,39 +50,43 @@ server:
         # e.g. "deny:./blacklist.txt"
         # e.g. "accept:./whitelist.txt|deny_all" 仅允许`whitelist.txt`里的IP。
         # e.g. "deny:./blacklist.txt|accept:./whitelist.txt|deny_all"
-        # 默认："accept:./chn.list|deny_all" 
+        # 默认："accept:./chn.list|deny_all" 仅允许`chn.list`里的IP。
         ip_policies: "accept:./chn.list|deny_all"
 
         # 域名策略设定
-        # 格式: "action:file|action:file|..."
         #
-        # 域名分流策略根据请求的域名决定local如何处理该请求。可由多个策略构成，用`|`分割。
-        # 处理流程从左至右，如果上一条策略没有命中，将匹配下一条。
-        # 如果直到最后都没有命中任何策略，默认为`允许local处理该请求`。
+        # 域名分流策略在收到客户端请求时生效。将在根据请求的域名决定如何请求local和remote。
+        # 可由多个策略构成，用`|`分割。处理流程从左至右，如果上一条策略没有命中，将匹配下一条。
+        # 如果直到最后都没有命中任何策略，默认为`允许请求local`。
         #
-        # `file`为域名表的路径。
+        # 格式: "action:file|action:file|action:file|..."
+        # `file`为域名表的路径。注意: Windows平台不支持绝对路径。
         # `action`可以是
-        #   `force`: 如果域名在`file`中，则强制local处理该请求(不会被remote解析)。
-        #       并且最终应答会无视其他所有匹配条件(IP，请求类型等)，强制接受。
-        #   `accept`: 如果域名在`file`中，允许local处理该请求(同时也会送至remote)。
-        #   `deny`: 如果域名在`file`中，禁止local处理该请求(仅由remote解析)。
+        #   `force`: 如果域名在`file`中，则强制只请求local(不会请求remote)。
+        #       收到的结果会无视其他匹配条件(IP策略(见上)，deny_results_without_ip(见下))，强制接受。
+        #   `accept`: 如果域名在`file`中，允许请求local(同时也会请求remote)。
+        #   `deny`: 如果域名在`file`中，禁止请求local(仅请求remote)。
         #   `deny_all`: 无条件拒绝，用在最后，拒绝直到最后都没有命中任何策略的请求。
-        #       相当于把默认处理方式改为`禁止local处理该请求`。后不需要跟`file`。
+        #       相当于把默认处理方式改为`禁止请求local`。后不需要跟`file`。
         #
-        # e.g. "deny:./blacklist.txt" 禁止local解析`blacklist.txt`里的域名。
-        # e.g. "force:./whitelist.txt" 强制local解析`whitelist.txt`里的域名。
-        # e.g. "force:./whitelist.txt|deny_all" 强制并限制local只能解析`whitelist.txt`里的域名。
+        # e.g. "deny:./blacklist.txt" `blacklist.txt`里的域名不会请求local。
+        # e.g. "force:./whitelist.txt" `whitelist.txt`里的域名只请求local。
+        # e.g. "force:./whitelist.txt|deny_all" 强制并限制`whitelist.txt`里的域名只能由local解析。
         # e.g. "force:./chn_domain.list|accept:./whitelist.txt|deny_all"
+        #
         # 默认："force:./chn_domain.list"
-        domain_policies: "force:./chn_domain.list|deny_all"
+        # 隐私保护，限制local服务器只解析大陆域名："force:./chn_domain.list|deny_all"
+        domain_policies: "force:./chn_domain.list"
 
         # 域名策略是否也检查返回应答中的CNAME记录(CNAME深度检查)。
-        # `force`这时同等于`accept`。如果返回的CNAME被`deny`，则该应答被拒绝并丢弃。
+        # 这时域名策略的`force`等于`accept`。
+        # 匹配方式同ip_policies，只不过匹配的是CNAME。
         check_cname: true 
 
         # 高级
         deny_unusual_types: false # 是否屏蔽不常见(包含多个Question、非A和AAAA)请求。
         deny_results_without_ip: true  # 是否丢弃没有IP的A和AAAA应答。
+
 
     # remote远程服务器设定
     remote:
