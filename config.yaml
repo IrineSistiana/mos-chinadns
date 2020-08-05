@@ -79,7 +79,7 @@ server:
         # e.g. "force:./chn_domain.list|accept:./whitelist.txt|deny_all"
         #
         # 默认: "force:./chn_domain.list"
-        # 隐私保护，限制local服务器只解析chn_domain.list内域名: "force:./|deny_all"
+        # 隐私保护，限制local服务器只解析`chn_domain.list`内域名: "force:./chn_domain.list|deny_all"
         domain_policies: "force:./chn_domain.list"
 
         # 域名策略是否也检查返回应答中的CNAME记录(CNAME深度检查)。
