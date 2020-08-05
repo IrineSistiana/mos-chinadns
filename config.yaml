@@ -1,23 +1,26 @@
-# 监听设定
-bind:
-    addr: "127.0.0.1:53" # [必需]监听地址。IP设为`0.0.0.0`可监听包括IPv6的所有地址。
-    protocol: "all" # 监听协议。`tcp`|`udp`|`all`其中之一。`all`会同时监听tcp和udp。
+# 监听设定 [必需]
+# 格式: ["protocol://host:port","protocol://host:port",...]
+#   `protocol`为监听协议。`tcp`或`udp`。
+#   `host`是监听地址。设为`0.0.0.0`可监听本机包括IPv6的所有地址，不必再监听[::]。
+#   `port`为监听端口。
+# 默认: ["udp://127.0.0.1:53","tcp://127.0.0.1:53","udp://[::1]:53","tcp://[::1]:53"]
+# 监听所有地址: ["udp://0.0.0.0:53","tcp://0.0.0.0:53"]
+bind: ["udp://127.0.0.1:53","tcp://127.0.0.1:53","udp://[::1]:53","tcp://[::1]:53"]
 
 # 分流器设定
 dispatcher:
     cache: # 缓存设定
         size: 0 # 缓存大小。单位: 条。0表示禁用缓存。
-        min_ttl: 300 # 最小生存时间。单位: 秒。
+        min_ttl: 0 # 最小生存时间。单位: 秒。收到的回复ttl如果小于该值，则会改写成该值。
     max_concurrent_queries: 150 # 最大并发查询数。默认150。
 
 # 上游服务器设定
 server:
     # local本地服务器设定
     local:
-        # 服务器地址。留空表示禁用该服务器。
-        addr: "223.5.5.5:443" 
+        addr: "223.5.5.5:443" # 服务器地址。留空表示禁用该服务器。
         protocol: "doh" # 服务器协议。`tcp`|`udp`|`doh`|`dot`其中之一。
-        socks5: "" # socks5代理服务器地址。注意：udp协议不会使用socks5代理。不支持认证。
+        socks5: "" # socks5代理服务器地址。注意: udp协议不会使用socks5代理。不支持认证。
 
         # TCP设定，仅`protocol`为`tcp`时有用。
         tcp:
@@ -40,8 +43,8 @@ server:
         # 如果直到最后都没有命中任何策略，默认`接受local返回的结果`。
         #
         # 格式: "action:file|action:file|action:file|..."
-        # `file`为IP表文件的路径。注意: Windows平台不支持绝对路径。
-        # `action`是策略，可以是：
+        # `file`为IP表文件的路径。
+        # `action`是策略，可以是:
         #   `accept`: 如果IP在`file`中，接受。
         #   `deny`: 如果IP在`file`中，拒绝并丢弃。
         #   `deny_all`: 无条件拒绝，用在最后，拒绝直到最后都没有命中任何策略的结果。
@@ -50,7 +53,8 @@ server:
         # e.g. "deny:./blacklist.txt"
         # e.g. "accept:./whitelist.txt|deny_all" 仅允许`whitelist.txt`里的IP。
         # e.g. "deny:./blacklist.txt|accept:./whitelist.txt|deny_all"
-        # 默认："accept:./chn.list|deny_all" 仅允许`chn.list`里的IP。
+        #
+        # 默认: "accept:./chn.list|deny_all" 仅允许`chn.list`里的IP。
         ip_policies: "accept:./chn.list|deny_all"
 
         # 域名策略设定
@@ -60,7 +64,7 @@ server:
         # 如果直到最后都没有命中任何策略，默认为`允许请求local`。
         #
         # 格式: "action:file|action:file|action:file|..."
-        # `file`为域名表的路径。注意: Windows平台不支持绝对路径。
+        # `file`为域名表的路径。
         # `action`可以是
         #   `force`: 如果域名在`file`中，则强制只请求local(不会请求remote)。
         #       收到的结果会无视其他匹配条件(IP策略(见上)，deny_results_without_ip(见下))，强制接受。
@@ -74,14 +78,14 @@ server:
         # e.g. "force:./whitelist.txt|deny_all" 强制并限制`whitelist.txt`里的域名只能由local解析。
         # e.g. "force:./chn_domain.list|accept:./whitelist.txt|deny_all"
         #
-        # 默认："force:./chn_domain.list"
-        # 隐私保护，限制local服务器只解析大陆域名："force:./chn_domain.list|deny_all"
+        # 默认: "force:./chn_domain.list"
+        # 隐私保护，限制local服务器只解析chn_domain.list内域名: "force:./|deny_all"
         domain_policies: "force:./chn_domain.list"
 
         # 域名策略是否也检查返回应答中的CNAME记录(CNAME深度检查)。
         # 这时域名策略的`force`等于`accept`。
         # 匹配方式同ip_policies，只不过匹配的是CNAME。
-        check_cname: true 
+        check_cname: true
 
         # 高级
         deny_unusual_types: false # 是否屏蔽不常见(包含多个Question、非A和AAAA)请求。
@@ -108,8 +112,8 @@ server:
         # 如果请求local还没有返回结果或结果被拒绝了，则开始请求remote。
         # 该选项能牺牲一点延时来降低请求remote的次数，进而降低设备负载。
         # 同时减小了本地域名被remote抢答的概率。
-        # 默认：`0`。禁用延时启动，请求将同步发送。
-        # 如需启用，建议值：local服务器延时的120%。
+        # 默认: `0`。禁用延时启动，请求将同步发送。
+        # 如需启用，建议值: local服务器延时的120%。
         delay_start: 0
 
 # ECS设定
@@ -124,6 +128,9 @@ ecs:
 
 # CA证书设定
 ca:
-    # 证书文件的路径。证书需为PEM格式，可以是ca-bundle(包含多个PEM块)。
+    # 导入用于TLS验证的CA证书。证书需为PEM格式。
+    # 可以是ca-bundle(包含多个PEM块)。可指定多个证书文件。
     # 留空默认使用系统自带CA证书。
-    path: "" 
+    # e.g. ["./my.cert"]
+    # e.g. ["./a.cert", "./b.cert", ...]
+    path: []
