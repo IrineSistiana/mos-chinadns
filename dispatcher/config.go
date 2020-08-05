@@ -64,7 +64,7 @@ type Config struct {
 	} `yaml:"ecs"`
 
 	CA struct {
-		Path string `yaml:"path"`
+		Path []string `yaml:"path"`
 	} `yaml:"ca"`
 }
 

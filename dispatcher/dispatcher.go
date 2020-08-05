@@ -490,15 +490,18 @@ func answerHasIP(rr []dns.RR) bool {
 	return false
 }
 
-func caPath2Pool(ca string) (*x509.CertPool, error) {
-	pem, err := ioutil.ReadFile(ca)
-	if err != nil {
-		return nil, fmt.Errorf("ReadFile: %w", err)
-	}
-
+func caPath2Pool(cas []string) (*x509.CertPool, error) {
 	rootCAs := x509.NewCertPool()
-	if ok := rootCAs.AppendCertsFromPEM(pem); !ok {
-		return nil, fmt.Errorf("AppendCertsFromPEM: no certificate was successfully parsed in %s", ca)
+
+	for _, ca := range cas {
+		pem, err := ioutil.ReadFile(ca)
+		if err != nil {
+			return nil, fmt.Errorf("ReadFile: %w", err)
+		}
+
+		if ok := rootCAs.AppendCertsFromPEM(pem); !ok {
+			return nil, fmt.Errorf("AppendCertsFromPEM: no certificate was successfully parsed in %s", ca)
+		}
 	}
 	return rootCAs, nil
 }
