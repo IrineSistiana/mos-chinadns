@@ -21,7 +21,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"github.com/miekg/dns"
 	"net"
 	"os"
 	"os/signal"
@@ -29,6 +28,8 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+
+	"github.com/miekg/dns"
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher"
 
@@ -151,9 +152,16 @@ func main() {
 		entry.Fatalf("main: can not load config file, %v", err)
 	}
 
+	d, err := dispatcher.InitDispatcher(c, entry)
+	if err != nil {
+		entry.Fatalf("main: init dispatcher: %v", err)
+	}
+
 	go func() {
-		err := dispatcher.StartServer(c, entry)
-		entry.Fatalf("main: StartServer: %v", err)
+		err := d.StartServer()
+		if err != nil {
+			entry.Fatalf("main: StartServer: %v", err)
+		}
 	}()
 
 	//wait signals

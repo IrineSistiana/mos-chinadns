@@ -52,6 +52,8 @@ var (
 
 // Dispatcher represents a dns query dispatcher
 type Dispatcher struct {
+	config *Config
+
 	entry                *logrus.Entry
 	maxConcurrentQueries int
 
@@ -85,7 +87,9 @@ type Dispatcher struct {
 // InitDispatcher inits a dispatcher from configuration
 func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 	d := new(Dispatcher)
+	d.config = conf
 	d.entry = entry
+
 	if conf.Dispatcher.MaxConcurrentQueries <= 0 {
 		d.maxConcurrentQueries = 150
 	} else {
