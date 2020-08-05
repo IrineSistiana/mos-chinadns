@@ -122,7 +122,6 @@ func initTestDispatcherAndServer(lLatency, rLatency time.Duration, lIP, rIP net.
 	// just set the value for initDispatcher() inner checks, we will hijack the upstream later.
 	c.Server.Local.Addr = "127.0.0.1:0"
 	c.Server.Remote.Addr = "127.0.0.1:0"
-	c.Bind.Addr = "127.0.0.1:0"
 
 	c.ECS.Local = "1.2.3.0/24"
 	c.ECS.Remote = "4.3.2.0/24"

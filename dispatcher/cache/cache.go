@@ -18,11 +18,12 @@
 package cache
 
 import (
+	"sync"
+	"time"
+
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"github.com/miekg/dns"
-	"sync"
-	"time"
 )
 
 type Cache struct {
@@ -68,7 +69,7 @@ func (c *Cache) Add(q dns.Question, r *dns.Msg, expireAt time.Time) {
 	c.writeCounter++
 }
 
-func (c *Cache) Get(q dns.Question, id uint16) *dns.Msg {
+func (c *Cache) Get(q dns.Question) *dns.Msg {
 	c.l.RLock()
 	e, ok := c.m[q]
 	c.l.RUnlock()
@@ -86,7 +87,6 @@ func (c *Cache) Get(q dns.Question, id uint16) *dns.Msg {
 		r := new(dns.Msg)
 		e.m.CopyTo(r)
 		utils.SetAnswerTTL(r, uint32(ttl/time.Second)) // set rr ttl sections
-		r.Id = id
 		return r
 	}
 

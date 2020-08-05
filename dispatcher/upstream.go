@@ -50,11 +50,10 @@ const (
 
 // Upstream represents a dns upstream
 type Upstream interface {
-	// Exchange sends qRaw to upstream and return its reply. For better performance, release the rRaw.
 	Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error)
 }
 
-// upstreamCommon represents a udp/tcp/tls server
+// upstreamCommon represents a udp/tcp/tls upstream
 type upstreamCommon struct {
 	dialNewConn func() (net.Conn, error)
 	writeMsg    func(c io.Writer, m *dns.Msg) (int, error)
@@ -63,7 +62,7 @@ type upstreamCommon struct {
 	cp *connPool
 }
 
-// upstreamWithLimit represents server but has a concurrent limitation
+// upstreamWithLimit represents upstream with a concurrent limitation
 type upstreamWithLimit struct {
 	bk *bucket
 	u  Upstream

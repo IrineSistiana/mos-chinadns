@@ -65,7 +65,7 @@ func TestCache(t *testing.T) {
 		m := new(dns.Msg)
 		m.SetQuestion("example.com.", dns.TypeA)
 		c.Add(q, m, time.Now().Add(time.Minute)) // add a nil msg
-		if mOut := c.Get(q, m.Id); mOut.String() != m.String() {
+		if mOut := c.Get(q); mOut.String() != m.String() {
 			t.Fatal("cache Get failed")
 		}
 	}

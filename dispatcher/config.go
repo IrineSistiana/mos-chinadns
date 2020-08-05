@@ -26,10 +26,7 @@ import (
 
 // Config is config
 type Config struct {
-	Bind struct {
-		Addr     string `yaml:"addr"`
-		Protocol string `yaml:"protocol"`
-	} `yaml:"bind"`
+	Bind []string `yaml:"bind"`
 
 	Dispatcher struct {
 		Cache struct {
@@ -64,7 +61,7 @@ type Config struct {
 	} `yaml:"ecs"`
 
 	CA struct {
-		Path string `yaml:"path"`
+		Path []string `yaml:"path"`
 	} `yaml:"ca"`
 }
 
