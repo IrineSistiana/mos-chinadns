@@ -107,7 +107,7 @@ func Test_upstream(t *testing.T) {
 			Addr:     addr,
 			Protocol: "udp",
 		}
-		upstreamUDP, err := NewUpstream(sc, 100, nil)
+		upstreamUDP, err := NewUpstream(sc, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -132,7 +132,7 @@ func Test_upstream(t *testing.T) {
 			Protocol: "tcp",
 		}
 		sc.TCP.IdleTimeout = 8
-		upstreamTCP, err := NewUpstream(sc, 100, nil)
+		upstreamTCP, err := NewUpstream(sc, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,7 +165,7 @@ func Test_upstream(t *testing.T) {
 		}
 		sc.DoT.IdleTimeout = 10
 		sc.DoT.ServerName = "example.com"
-		upstreamDot, err := NewUpstream(sc, 100, nil)
+		upstreamDot, err := NewUpstream(sc, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

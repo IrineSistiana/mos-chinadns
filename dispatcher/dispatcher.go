@@ -76,12 +76,6 @@ type Dispatcher struct {
 		client     Upstream
 		delayStart time.Duration
 	}
-
-	ecs struct {
-		local          *dns.EDNS0_SUBNET
-		remote         *dns.EDNS0_SUBNET
-		forceOverwrite bool
-	}
 }
 
 // InitDispatcher inits a dispatcher from configuration
@@ -89,12 +83,6 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 	d := new(Dispatcher)
 	d.config = conf
 	d.entry = entry
-
-	if conf.Dispatcher.MaxConcurrentQueries <= 0 {
-		d.maxConcurrentQueries = 150
-	} else {
-		d.maxConcurrentQueries = conf.Dispatcher.MaxConcurrentQueries
-	}
 
 	if conf.Dispatcher.Cache.Size > 0 {
 		d.cache.Cache = cache.New(conf.Dispatcher.Cache.Size)
@@ -116,10 +104,11 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 	}
 
 	if len(conf.Server.Local.Addr) != 0 {
-		client, err := NewUpstream(&conf.Server.Local.BasicServerConfig, conf.Dispatcher.MaxConcurrentQueries, rootCAs)
+		client, err := NewUpstream(&conf.Server.Local.BasicServerConfig, rootCAs)
 		if err != nil {
 			return nil, fmt.Errorf("init local server: %w", err)
 		}
+
 		d.local.client = client
 		d.local.denyUnusualTypes = conf.Server.Local.DenyUnusualTypes
 		d.local.denyResultWithoutIP = conf.Server.Local.DenyResultsWithoutIP
@@ -127,10 +116,11 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 	}
 
 	if len(conf.Server.Remote.Addr) != 0 {
-		client, err := NewUpstream(&conf.Server.Remote.BasicServerConfig, conf.Dispatcher.MaxConcurrentQueries, rootCAs)
+		client, err := NewUpstream(&conf.Server.Remote.BasicServerConfig, rootCAs)
 		if err != nil {
 			return nil, fmt.Errorf("init remote server: %w", err)
 		}
+
 		d.remote.client = client
 		d.remote.delayStart = time.Millisecond * time.Duration(conf.Server.Remote.DelayStart)
 		if d.remote.delayStart >= queryTimeout {
@@ -153,26 +143,6 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 		}
 		d.local.domainPolicies = p
 	}
-
-	if len(conf.ECS.Local) != 0 {
-		subnet, err := newEDNS0SubnetFromStr(conf.ECS.Local)
-		if err != nil {
-			return nil, fmt.Errorf("parsing local ECS subnet, %w", err)
-		}
-		d.ecs.local = subnet
-		d.entry.Info("initDispatcher: local server ECS enabled")
-	}
-
-	if len(conf.ECS.Remote) != 0 {
-		subnet, err := newEDNS0SubnetFromStr(conf.ECS.Remote)
-		if err != nil {
-			return nil, fmt.Errorf("parsing remote ECS subnet, %w", err)
-		}
-		d.ecs.remote = subnet
-		d.entry.Info("initDispatcher: remote server ECS enabled")
-	}
-
-	d.ecs.forceOverwrite = conf.ECS.ForceOverwrite
 
 	return d, nil
 }
@@ -257,17 +227,8 @@ func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, err
 		go func() {
 			defer upstreamWG.Done()
 
-			var qToLocal *dns.Msg
-			qToLocal = q
-			if d.ecs.local != nil {
-				qWithLocalECS := appendECS(q, d.ecs.local, d.ecs.forceOverwrite, true)
-				if qWithLocalECS != nil { // ecs appended
-					qToLocal = qWithLocalECS
-				}
-			}
-
 			queryStart := time.Now()
-			r, err := d.local.client.Exchange(ctx, qToLocal)
+			r, err := d.local.client.Exchange(ctx, q)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
@@ -312,17 +273,8 @@ func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, err
 				}
 			}
 
-			var qToRemote *dns.Msg
-			qToRemote = q
-			if d.ecs.remote != nil {
-				qWithRemoteECS := appendECS(q, d.ecs.remote, d.ecs.forceOverwrite, true)
-				if qWithRemoteECS != nil { // ecs appended
-					qToRemote = qWithRemoteECS
-				}
-			}
-
 			queryStart := time.Now()
-			r, err := d.remote.client.Exchange(ctx, qToRemote)
+			r, err := d.remote.client.Exchange(ctx, q)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
