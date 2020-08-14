@@ -33,7 +33,6 @@ type Config struct {
 			Size   int    `yaml:"size"`
 			MinTTL uint32 `yaml:"min_ttl"`
 		} `yaml:"cache"`
-		MaxConcurrentQueries int `yaml:"max_concurrent_queries"`
 	} `yaml:"dispatcher"`
 
 	Server struct {
@@ -54,12 +53,6 @@ type Config struct {
 		} `yaml:"remote"`
 	} `yaml:"server"`
 
-	ECS struct {
-		Local          string `yaml:"local"`
-		Remote         string `yaml:"remote"`
-		ForceOverwrite bool   `yaml:"force_overwrite"`
-	} `yaml:"ecs"`
-
 	CA struct {
 		Path []string `yaml:"path"`
 	} `yaml:"ca"`
@@ -67,9 +60,14 @@ type Config struct {
 
 // BasicServerConfig is a basic config for a upstream dns server.
 type BasicServerConfig struct {
-	Addr     string `yaml:"addr"`
-	Protocol string `yaml:"protocol"`
-	Socks5   string `yaml:"socks5"`
+	Addr                 string `yaml:"addr"`
+	Protocol             string `yaml:"protocol"`
+	Socks5               string `yaml:"socks5"`
+	MaxConcurrentQueries int    `yaml:"max_concurrent_queries"`
+	EDNS0                struct {
+		ClientSubnet   string `yaml:"client_subnet"`
+		ForceOverwrite bool   `yaml:"force_overwrite"`
+	} `yaml:"edns0"`
 
 	TCP struct {
 		IdleTimeout uint `yaml:"idle_timeout"`

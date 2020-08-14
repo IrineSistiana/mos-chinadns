@@ -62,27 +62,54 @@ type upstreamCommon struct {
 	cp *connPool
 }
 
-// upstreamWithLimit represents upstream with a concurrent limitation
-type upstreamWithLimit struct {
-	bk *bucket
-	u  Upstream
+// upstream represents upstream with a concurrent limitation
+type upstream struct {
+	bk    *bucket
+	edns0 struct {
+		clientSubnet   *dns.EDNS0_SUBNET
+		forceOverwrite bool
+	}
+
+	u Upstream
+}
+
+var (
+	errTooManyConcurrentQueries = errors.New("too many concurrent queries")
+)
+
+func (u *upstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
+	if u.bk != nil {
+		if u.bk.acquire() == false {
+			return nil, errTooManyConcurrentQueries
+		}
+		defer u.bk.release()
+	}
+
+	if u.edns0.clientSubnet != nil {
+		qWithECS := appendECS(q, u.edns0.clientSubnet, u.edns0.forceOverwrite, true)
+		if qWithECS != nil {
+			return u.u.Exchange(ctx, qWithECS)
+		}
+	}
+
+	return u.u.Exchange(ctx, q)
 }
 
 // NewUpstream inits a upstream instance base on the config.
-// maxConcurrentQueries limits the max concurrent queries for this upstream. 0 means disable the limit.
 // rootCAs will be used in dot/doh upstream in tls server verification.
-func NewUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.CertPool) (Upstream, error) {
+func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error) {
 	if sc == nil {
 		return nil, errors.New("no server config")
 	}
 
-	var upstream Upstream
+	var basicUpstream Upstream
+
 	switch sc.Protocol {
 	case "udp", "":
 		dialUDP := func() (net.Conn, error) {
 			return net.DialTimeout("udp", sc.Addr, dialUDPTimeout)
 		}
-		upstream = &upstreamCommon{
+		basicUpstream = &upstreamCommon{
 			dialNewConn: dialUDP,
 			readMsg:     readMsgFromUDP,
 			writeMsg:    writeMsgToUDP,
@@ -95,7 +122,7 @@ func NewUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 		}
 
 		idleTimeout := time.Duration(sc.TCP.IdleTimeout) * time.Second
-		upstream = &upstreamCommon{
+		basicUpstream = &upstreamCommon{
 			dialNewConn: dialTCP,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
@@ -134,7 +161,7 @@ func NewUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 			return tlsConn, nil
 		}
 		idleTimeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
-		upstream = &upstreamCommon{
+		basicUpstream = &upstreamCommon{
 			dialNewConn: dialTLS,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
@@ -159,30 +186,29 @@ func NewUpstream(sc *BasicServerConfig, maxConcurrentQueries int, rootCAs *x509.
 			return nil, fmt.Errorf("failed to init dialContext: %v", err)
 		}
 
-		upstream, err = newDoHUpstream(sc.DoH.URL, dialContext, tlsConf)
+		basicUpstream, err = newDoHUpstream(sc.DoH.URL, dialContext, tlsConf)
 		if err != nil {
-			return nil, fmt.Errorf("failed to init DoH upstream: %v", err)
+			return nil, fmt.Errorf("failed to init DoH: %v", err)
 		}
 	default:
 		return nil, fmt.Errorf("unsupport protocol: %s", sc.Protocol)
 	}
-	if maxConcurrentQueries > 0 {
-		limitedUpstream := &upstreamWithLimit{bk: newBucket(maxConcurrentQueries), u: upstream}
-		return limitedUpstream, nil
-	}
-	return upstream, nil
-}
 
-var (
-	errTooManyConcurrentQueries = errors.New("too many concurrent queries")
-)
+	u := &upstream{u: basicUpstream}
 
-func (u *upstreamWithLimit) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	if u.bk.acquire() == false {
-		return nil, errTooManyConcurrentQueries
+	if sc.MaxConcurrentQueries > 0 {
+		u.bk = newBucket(sc.MaxConcurrentQueries)
 	}
-	defer u.bk.release()
-	return u.u.Exchange(ctx, q)
+
+	if len(sc.EDNS0.ClientSubnet) != 0 {
+		subnet, err := newEDNS0SubnetFromStr(sc.EDNS0.ClientSubnet)
+		if err != nil {
+			return nil, fmt.Errorf("invaild ecs, %w", err)
+		}
+		u.edns0.clientSubnet = subnet
+	}
+
+	return u, nil
 }
 
 func (u *upstreamCommon) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
