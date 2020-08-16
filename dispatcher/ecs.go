@@ -26,7 +26,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-func isMsgHasECS(m *dns.Msg) bool {
+func checkMsgHasECS(m *dns.Msg) bool {
 	opt := m.IsEdns0()
 	if opt == nil { // no opt, no ecs
 		return false
@@ -41,18 +41,8 @@ func isMsgHasECS(m *dns.Msg) bool {
 	return false
 }
 
-// appendECS appends ecs to q.
-func appendECS(m *dns.Msg, ecs *dns.EDNS0_SUBNET, forceOverwrite, copyAndAppend bool) *dns.Msg {
-	if isMsgHasECS(m) {
-		if !forceOverwrite {
-			return nil // do nothing
-		}
-	}
-
-	if copyAndAppend {
-		m = m.Copy()
-	}
-
+// applyECS applies ecs to m.
+func applyECS(m *dns.Msg, ecs *dns.EDNS0_SUBNET) *dns.Msg {
 	opt := m.IsEdns0()
 	if opt == nil { // no opt, we need a new opt
 		o := new(dns.OPT)

@@ -123,7 +123,7 @@ func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err 
 
 func (d *Dispatcher) tryGetFromCache(q *dns.Msg) (r *dns.Msg) {
 	// don't use cache for those msg
-	if len(q.Question) == 1 || isMsgHasECS(q) == true {
+	if len(q.Question) == 1 || checkMsgHasECS(q) == true {
 		return nil
 	}
 

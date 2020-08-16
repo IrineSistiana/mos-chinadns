@@ -143,9 +143,9 @@ func (u *upstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 
 	// append edns0 client subnet
 	if u.edns0.clientSubnet != nil {
-		qWithECS := appendECS(q, u.edns0.clientSubnet, u.edns0.overwriteECS, true)
-		if qWithECS != nil {
-			return u.u.Exchange(ctx, qWithECS)
+		if checkMsgHasECS(q) == false || (checkMsgHasECS(q) == true && u.edns0.overwriteECS) {
+			q = q.Copy()
+			applyECS(q, u.edns0.clientSubnet)
 		}
 	}
 
