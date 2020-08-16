@@ -16,7 +16,7 @@ dispatcher:
 
 # 上游服务器设定
 # 可包含一个或多个上游服务器。
-# 各个上游服务器的策略将决定对于某一请求该上游服务器是否启用以及应答是否被采纳。
+# 各个上游服务器的策略将决定对于某一请求是否允许发送至该上游服务器解析以及应答是否被采纳。
 # 请求会同时发送给启用的上游服务器。分流器最终会采纳最快被上游服务器采纳的应答。
 upstream:
     # 一个上游服务器，名叫local
@@ -38,42 +38,68 @@ upstream:
         doh:
             url: "https://223.5.5.5/dns-query" # [必需] DoH的URL。
 
-
-        deduplicate: false # 请求去重。如果同时有多个相同的下游请求，只请求上游服务器一次。
-        max_concurrent_queries: 0 # 最大并发查询数。0表示不限制。
+        # 是否请求去重。
+        # false: 来自下游的请求将一对一的发送至上游。
+        # true: 如果同时有多个相同的下游请求，只请求上游服务器一次，再分发至下游。
+        deduplicate: false
+        max_concurrent_queries: 0 # 最大并发查询数限制。0表示不限制。
 
         # edns0相关设定
         edns0:
             # ECS地址，格式为CIDR。
-            # 如果填入，来自下游没有ECS的请求将被插入ECS。
+            # 如果填入，来自下游的请求如果没有ECS将被插入ECS。
             # e.g. "1.2.3.0/24"
             # e.g. "2001:dd8:1a::/48"
             client_subnet: ""
-            overwrite_ecs: false # 强制改写下游请求已包含的ECS。
+            overwrite_ecs: false # 是否强制改写下游请求已包含的ECS。
 
-        # 策略设定
+        # 策略
+        # 策略决定了对于给定请求，是否允许发送至该上游，以及是否采纳返回的应答。
+        # 策略处理流程从上到下。
         policies:
-            # 域名策略设定
-            # 域名策略将根据请求的域名决定该请求是否能被该上游服务器处理。
+            # 是否拒绝策略无法处理的请求类型。
+            # 目前域名/IP策略只能处理A和AAAA请求。
+            # false: 非(A和AAAA)请求会被发送至该上游并且其应答会被直接采纳。
+            # true: 拒绝非(A和AAAA)请求发送至该上游。
+            deny_unhandlable_types: false
+
+            # 域名策略
+            # 域名策略将根据请求的域名决定该请求是否允许发送至该上游。
             # 可由多个策略构成，用`|`分割。处理流程从左至右，如果上一条策略没有命中，将匹配下一条。
-            # 如果直到最后都没有命中任何策略，默认为`允许`。
+            # 如果直到最后都没有命中任何策略，默认为`允许发送至该上游`。
             #
             # 格式: "action:file|action:file|action:file|..."
             # `file`为域名表的路径。
             # `action`可以是
-            #   `accept`: 允许该上游服务器处理包含在`file`中的域名。
-            #   `deny`: 禁止该上游服务器处理包含在`file`中的域名。
-            #   `deny_all`: 无条件拒绝，用在最后，拒绝直到最后都没有命中任何策略的域名。
-            #       相当于把域名的默认处理方式改为`禁止该上游服务器处理`。后不需要跟`file`。
+            #   `accept`: 包含在`file`中的域名允许发送至该上游，并且其应答会被直接采纳。
+            #   `deny`: 包含在`file`中的域名不会发送至该上游。
+            #   `deny_all`: 无条件拒绝，用在最后，直到最后都没有命中任何策略的域名禁止发送至该上游。
+            #       相当于把域名的默认处理方式改为`禁止发送至该上游`。后不需要跟`file`。
             #
-            # e.g. "deny:./blacklist.txt" 该上游服务器不会处理`blacklist.txt`里的域名。
-            # e.g. "accept:./whitelist.txt|deny_all" 该上游服务器只会处理`whitelist.txt`里的域名。
+            # e.g. "deny:./blacklist.txt" `blacklist.txt`里的域名不会发送至该上游。
+            # e.g. "accept:./whitelist.txt|deny_all" 只有`whitelist.txt`里的域名才会发送至该上游。
             #
-            # 默认为空，所有域名可以被local服务器处理: ""
-            # 隐私保护模式，限制local服务器只处理`chn_domain.list`内域名: "accept:./chn_domain.list|deny_all"
+            # 默认为空，所有域名都会发送至local服务器。
+            #
+            # Tips: 隐私保护模式: "accept:./chn_domain.list|deny_all"
+            # 这限制了只有`chn_domain.list`里的域名能发送至local服务器:
             domain: ""
 
-            # IP策略设定
+            # 是否拒绝返回了出错的Rcode(Rcode!=0)的应答
+            # false: 返回了非零Rcode的应答会被直接采纳。
+            # true: 返回了非零Rcode的应答会被丢弃。
+            deny_error_rcode: true
+
+            # 是否用域名策略检查返回应答中的CNAME记录。
+            # 这时域名策略的工作方式同IP策略，只不过匹配的是返回应答的CNAME部分。
+            check_cname: true
+
+            # 是否拒绝不包含任何IP的应答。
+            # false: 不包含任何IP的应答会被直接采纳。
+            # true: 不包含任何IP的应答会被丢弃。
+            deny_empty_ip_reply: true
+
+            # IP策略
             # IP策略将根据应答中的IP决定该返应答能否被采纳。
             # 可由多个策略构成，用`|`分割，处理流程从左至右，如果上一条策略没有命中，将继续匹配下一条。
             # 如果直到最后都没有命中任何策略，默认`采纳该应答`。
@@ -82,9 +108,9 @@ upstream:
             # `file`为IP表文件的路径。
             # `action`是策略，可以是:
             #   `accept`: 如果IP在`file`中，采纳该应答。
-            #   `deny`: 如果IP在`file`中，拒绝并丢弃该应答。
-            #   `deny_all`: 无条件拒绝，用在最后，拒绝直到最后都没有命中任何策略的应答。
-            #       相当于把默认处理方式改为`拒绝并丢弃该应答`。后不需要跟`file`。
+            #   `deny`: 如果IP在`file`中，丢弃该应答。
+            #   `deny_all`: 无条件拒绝，用在最后，直到最后都没有命中任何策略的应答会被直接丢弃。
+            #       相当于把默认处理方式改为`丢弃该应答`。后不需要跟`file`。
             #
             # e.g. "deny:./blacklist.txt"
             # e.g. "accept:./whitelist.txt|deny_all" 仅允许`whitelist.txt`里的IP。
@@ -92,20 +118,6 @@ upstream:
             #
             # 默认: "accept:./chn.list|deny_all" 仅允许local返回`chn.list`里的IP。
             ip: "accept:./chn.list|deny_all"
-
-            # CNAME深度检查
-            # 域名策略是否也检查返回应答中的CNAME记录。
-            # 这时域名策略的工作方式同IP策略，只不过匹配的是返回应答的CNAME部分。
-            check_cname: true
-
-            deny_error_rcode: true # 拒绝返回了出错的Rcode(Rcode!=0)的应答。
-
-            # 拒绝处理策略无法处理的请求类型。
-            # 目前域名/IP策略只能处理A和AAAA请求。
-            # false: 非(A和AAAA)请求会被直接处理并采纳，不再进行域名/IP匹配。
-            # true: 拒绝该上游处理非(A和AAAA)请求。
-            deny_unhandlable_types: false
-            deny_empty_ip_reply: true # 拒绝不包含任何IP的应答。
 
     # 另外一个上游服务器，名叫remote。设置说明参见上文。
     remote:
@@ -128,18 +140,18 @@ upstream:
             overwrite_ecs: false
 
         policies:
-            domain: ""
-            ip: ""
-            check_cname: false
-            deny_error_rcode: false
             deny_unhandlable_types: false
+            domain: "deny:./chn_domain.list" # chn_domain.list里的域名无需remote解析。
+            deny_error_rcode: false
+            check_cname: false
             deny_empty_ip_reply: false
+            ip: ""
 
-    # 如果还想继续添加上游服务器，继续按上面的设置新服务器。
-    # 只需保持服务器名字不一样即可。比如继续添加一个名为another_upstream的服务器。
-    # another_upstream:
-    #    addr: ""
-    #    protocol: ""
+    # 如果还想添加上游服务器，只需将上面的服务器设置模板复制一遍。
+    # 保持服务器名字不一样和缩进对齐即可。比如继续添加一个名为another_remote的服务器。
+    # another_remote:
+    #    addr: "8.8.8.8:443"
+    #    protocol: "doh"
     #    socks5: ""
     #    tcp:
     #        idle_timeout: 0

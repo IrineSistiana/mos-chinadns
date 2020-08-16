@@ -70,13 +70,12 @@ type BasicServerConfig struct {
 		OverwriteECS bool   `yaml:"overwrite_ecs"`
 	} `yaml:"edns0"`
 	Policies struct {
-		Domain     string `yaml:"domain"`
-		IP         string `yaml:"ip"`
-		CheckCNAME bool   `yaml:"check_cname"`
-
-		DenyErrorRcode       bool `yaml:"deny_error_rcode"`
-		DenyUnhandlableTypes bool `yaml:"deny_unhandlable_types"`
-		DenyEmptyIPReply     bool `yaml:"deny_empty_ip_reply"`
+		DenyUnhandlableTypes bool   `yaml:"deny_unhandlable_types"`
+		Domain               string `yaml:"domain"`
+		DenyErrorRcode       bool   `yaml:"deny_error_rcode"`
+		CheckCNAME           bool   `yaml:"check_cname"`
+		DenyEmptyIPReply     bool   `yaml:"deny_empty_ip_reply"`
+		IP                   string `yaml:"ip"`
 	}
 }
 
