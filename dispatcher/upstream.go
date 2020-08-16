@@ -176,10 +176,10 @@ func (u *upstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 	}
 
 	// check ip
-	if u.policies.ip != nil && checkMsgIP(u.policies.ip, r) == policyFinalActionDeny {
+	if u.policies.denyEmptyIPReply && checkMsgHasValidIP(r) == false {
 		return nil, nil
 	}
-	if u.policies.denyEmptyIPReply && checkMsgHasValidIP(r) == false {
+	if u.policies.ip != nil && checkMsgIP(u.policies.ip, r) == policyFinalActionDeny {
 		return nil, nil
 	}
 
