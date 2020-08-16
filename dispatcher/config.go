@@ -18,40 +18,22 @@
 package dispatcher
 
 import (
+	"gopkg.in/yaml.v3"
 	"io/ioutil"
 	"os"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Config is config
 type Config struct {
-	Bind []string `yaml:"bind"`
-
 	Dispatcher struct {
+		Bind  []string `yaml:"bind"`
 		Cache struct {
-			Size   int    `yaml:"size"`
-			MinTTL uint32 `yaml:"min_ttl"`
+			Size int `yaml:"size"`
 		} `yaml:"cache"`
+		MinTTL uint32 `yaml:"min_ttl"`
 	} `yaml:"dispatcher"`
 
-	Server struct {
-		Local struct {
-			BasicServerConfig `yaml:"basic,inline"`
-
-			DenyUnusualTypes     bool `yaml:"deny_unusual_types"`
-			DenyResultsWithoutIP bool `yaml:"deny_results_without_ip"`
-			CheckCNAME           bool `yaml:"check_cname"`
-
-			IPPolicies     string `yaml:"ip_policies"`
-			DomainPolicies string `yaml:"domain_policies"`
-		} `yaml:"local"`
-
-		Remote struct {
-			BasicServerConfig `yaml:"basic,inline"`
-			DelayStart        int `yaml:"delay_start"`
-		} `yaml:"remote"`
-	} `yaml:"server"`
+	Upstream map[string]*BasicServerConfig `yaml:"upstream"`
 
 	CA struct {
 		Path []string `yaml:"path"`
@@ -60,14 +42,9 @@ type Config struct {
 
 // BasicServerConfig is a basic config for a upstream dns server.
 type BasicServerConfig struct {
-	Addr                 string `yaml:"addr"`
-	Protocol             string `yaml:"protocol"`
-	Socks5               string `yaml:"socks5"`
-	MaxConcurrentQueries int    `yaml:"max_concurrent_queries"`
-	EDNS0                struct {
-		ClientSubnet   string `yaml:"client_subnet"`
-		ForceOverwrite bool   `yaml:"force_overwrite"`
-	} `yaml:"edns0"`
+	Addr     string `yaml:"addr"`
+	Protocol string `yaml:"protocol"`
+	Socks5   string `yaml:"socks5"`
 
 	TCP struct {
 		IdleTimeout uint `yaml:"idle_timeout"`
@@ -82,8 +59,25 @@ type BasicServerConfig struct {
 		URL string `yaml:"url"`
 	} `yaml:"doh"`
 
-	// for test and experts only
+	// for test and experts only, we add `omitempty`
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify,omitempty"`
+
+	Deduplicate          bool `yaml:"deduplicate"`
+	MaxConcurrentQueries int  `yaml:"max_concurrent_queries"`
+
+	EDNS0 struct {
+		ClientSubnet string `yaml:"client_subnet"`
+		OverwriteECS bool   `yaml:"overwrite_ecs"`
+	} `yaml:"edns0"`
+	Policies struct {
+		Domain     string `yaml:"domain"`
+		IP         string `yaml:"ip"`
+		CheckCNAME bool   `yaml:"check_cname"`
+
+		DenyErrorRcode       bool `yaml:"deny_error_rcode"`
+		DenyUnhandlableTypes bool `yaml:"deny_unhandlable_types"`
+		DenyEmptyIPReply     bool `yaml:"deny_empty_ip_reply"`
+	}
 }
 
 // LoadConfig loads a yaml config from path p.
@@ -104,6 +98,9 @@ func LoadConfig(p string) (*Config, error) {
 // GenConfig generates a template config to path p.
 func GenConfig(p string) error {
 	c := new(Config)
+	c.Upstream = make(map[string]*BasicServerConfig)
+	c.Upstream["local"] = new(BasicServerConfig)
+	c.Upstream["remote"] = new(BasicServerConfig)
 
 	f, err := os.Create(p)
 	if err != nil {

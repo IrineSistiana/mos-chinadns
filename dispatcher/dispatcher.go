@@ -33,9 +33,6 @@ import (
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 
 	"github.com/miekg/dns"
-
-	netlist "github.com/IrineSistiana/net-list"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -45,48 +42,26 @@ const (
 	queryTimeout = time.Second * 3
 )
 
-var (
-	// ErrServerFailed all upstreams are failed
-	ErrServerFailed = errors.New("server failed")
-)
-
 // Dispatcher represents a dns query dispatcher
 type Dispatcher struct {
 	config *Config
 
-	entry                *logrus.Entry
-	maxConcurrentQueries int
-
 	cache struct {
 		*cache.Cache
-		minTTL uint32
 	}
+	minTTL uint32
 
-	local struct {
-		client Upstream
-
-		denyUnusualTypes    bool
-		denyResultWithoutIP bool
-		checkCNAME          bool
-		ipPolicies          *ipPolicies
-		domainPolicies      *domainPolicies
-	}
-
-	remote struct {
-		client     Upstream
-		delayStart time.Duration
-	}
+	upstreams map[string]Upstream
 }
 
 // InitDispatcher inits a dispatcher from configuration
-func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
+func InitDispatcher(conf *Config) (*Dispatcher, error) {
 	d := new(Dispatcher)
 	d.config = conf
-	d.entry = entry
+	d.minTTL = conf.Dispatcher.MinTTL
 
 	if conf.Dispatcher.Cache.Size > 0 {
 		d.cache.Cache = cache.New(conf.Dispatcher.Cache.Size)
-		d.cache.minTTL = conf.Dispatcher.Cache.MinTTL
 	}
 
 	var rootCAs *x509.CertPool
@@ -96,202 +71,128 @@ func InitDispatcher(conf *Config, entry *logrus.Entry) (*Dispatcher, error) {
 		if err != nil {
 			return nil, fmt.Errorf("caPath2Pool: %w", err)
 		}
-		d.entry.Info("initDispatcher: CA cert loaded")
+		logger.Info("initDispatcher: CA cert loaded")
 	}
 
-	if len(conf.Server.Local.Addr) == 0 && len(conf.Server.Remote.Addr) == 0 {
-		return nil, errors.New("missing args: both local server and remote server are empty")
+	if len(conf.Upstream) == 0 {
+		return nil, fmt.Errorf("no upstream")
 	}
-
-	if len(conf.Server.Local.Addr) != 0 {
-		client, err := NewUpstream(&conf.Server.Local.BasicServerConfig, rootCAs)
+	d.upstreams = make(map[string]Upstream)
+	for name := range conf.Upstream {
+		u, err := NewUpstream(conf.Upstream[name], rootCAs)
 		if err != nil {
-			return nil, fmt.Errorf("init local server: %w", err)
+			return nil, fmt.Errorf("failed to init upstream %s: %w", name, err)
 		}
-
-		d.local.client = client
-		d.local.denyUnusualTypes = conf.Server.Local.DenyUnusualTypes
-		d.local.denyResultWithoutIP = conf.Server.Local.DenyResultsWithoutIP
-		d.local.checkCNAME = conf.Server.Local.CheckCNAME
-	}
-
-	if len(conf.Server.Remote.Addr) != 0 {
-		client, err := NewUpstream(&conf.Server.Remote.BasicServerConfig, rootCAs)
-		if err != nil {
-			return nil, fmt.Errorf("init remote server: %w", err)
-		}
-
-		d.remote.client = client
-		d.remote.delayStart = time.Millisecond * time.Duration(conf.Server.Remote.DelayStart)
-		if d.remote.delayStart >= queryTimeout {
-			return nil, fmt.Errorf("init remote server: remoteServerDelayStart is longer than globle query timeout %s", queryTimeout)
-		}
-	}
-
-	if len(conf.Server.Local.IPPolicies) != 0 {
-		p, err := newIPPolicies(conf.Server.Local.IPPolicies, d.entry)
-		if err != nil {
-			return nil, fmt.Errorf("loading ip policies, %w", err)
-		}
-		d.local.ipPolicies = p
-	}
-
-	if len(conf.Server.Local.DomainPolicies) != 0 {
-		p, err := newDomainPolicies(conf.Server.Local.DomainPolicies, d.entry)
-		if err != nil {
-			return nil, fmt.Errorf("loading domain policies, %w", err)
-		}
-		d.local.domainPolicies = p
+		d.upstreams[name] = u
 	}
 
 	return d, nil
-}
-
-func isUnusualType(q *dns.Msg) bool {
-	return q.Opcode != dns.OpcodeQuery || len(q.Question) != 1 || q.Question[0].Qclass != dns.ClassINET || (q.Question[0].Qtype != dns.TypeA && q.Question[0].Qtype != dns.TypeAAAA)
 }
 
 // ServeDNS sends q to upstreams and return first valid result.
 // Note: q will be unsafe to modify even after ServeDNS is returned.
 // (Some goroutine may still be running even after ServeDNS is returned)
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
-	defer pool.ReleaseRequestLogger(requestLogger)
+	requestLogger := getRequestLogger(q)
+	defer releaseRequestLogger(requestLogger)
 
-	hasECS := isMsgHasECS(q) // don't use cache for msg with ECS
-
-	if !hasECS {
+	if d.cache.Cache != nil {
 		if r = d.tryGetFromCache(q); r != nil {
 			requestLogger.Debug("cache hit")
 			return r, nil
 		}
 	}
 
-	r, err = d.exchangeDNS(ctx, q)
+	r, err = d.dispatch(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 
-	if !hasECS {
-		d.tryAddToCache(r)
+	// modify reply ttl
+	ttl := utils.GetAnswerMinTTL(r)
+	if ttl < d.minTTL {
+		ttl = d.minTTL
+	}
+	utils.SetAnswerTTL(r, ttl)
+
+	if d.cache.Cache != nil {
+		d.tryAddToCache(r, time.Duration(ttl)*time.Second)
 	}
 	return r, nil
 }
 
 func (d *Dispatcher) tryGetFromCache(q *dns.Msg) (r *dns.Msg) {
-	if d.cache.Cache != nil && len(q.Question) == 1 { // must have only one question
-		r := d.cache.Get(q.Question[0])
-		if r != nil {
-			r.Id = q.Id
-			return r
-		}
+	// don't use cache for those msg
+	if len(q.Question) == 1 || isMsgHasECS(q) == true {
 		return nil
 	}
+
+	if r := d.cache.Get(q.Question[0]); r != nil { // cache hit
+		r.Id = q.Id
+		return r
+	}
+
+	// cache miss
 	return nil
 }
 
-// tryAddToCache adds r to cache and modifies its ttl
-func (d *Dispatcher) tryAddToCache(r *dns.Msg) {
-	// must only have one question and Rcode must be success
-	if d.cache.Cache != nil && len(r.Question) == 1 && r.Rcode == dns.RcodeSuccess {
-		ttl := utils.GetAnswerMinTTL(r)
-		if ttl < d.cache.minTTL {
-			ttl = d.cache.minTTL
-		}
-		expireAt := time.Now().Add(time.Duration(ttl) * time.Second)
+// tryAddToCache adds r to cache
+func (d *Dispatcher) tryAddToCache(r *dns.Msg, ttl time.Duration) {
+	// only cache those msg
+	if len(r.Question) == 1 && r.Rcode == dns.RcodeSuccess {
+		expireAt := time.Now().Add(ttl)
 		d.cache.Add(r.Question[0], r, expireAt)
-
-		utils.SetAnswerTTL(r, ttl) // if r is added to cache, modify its ttl as well.
 	}
 }
 
-func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
-	requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
+var (
+	// ErrQueryFailed query failed because all upstreams are failed or not respond in time.
+	ErrQueryFailed = errors.New("query failed")
+)
+
+func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+	requestLogger := getRequestLogger(q)
 	resChan := pool.GetResChan()
-	upstreamFailedNotificationChan := pool.GetNotificationChan()
 
-	serveDNSWG := sync.WaitGroup{}
-	serveDNSWG.Add(1)
-	defer serveDNSWG.Done()
-
-	doLocal, doRemote := d.selectUpstreams(q)
-	requestLogger.Debugf("exchangeDNS: selectUpstreams: local: %v, remote: %v", doLocal, doRemote)
+	exchangeDNSWG := sync.WaitGroup{}
+	exchangeDNSWG.Add(1)
+	defer exchangeDNSWG.Done()
 
 	upstreamWG := sync.WaitGroup{}
-	var localNotificationChan chan notification.Signal
 
-	// local
-	if doLocal {
-		localNotificationChan = pool.GetNotificationChan()
+	for name, u := range d.upstreams {
+		name := name
+		u := u
+
 		upstreamWG.Add(1)
 		go func() {
 			defer upstreamWG.Done()
 
 			queryStart := time.Now()
-			r, err := d.local.client.Exchange(ctx, q)
+			r, err := u.Exchange(ctx, q)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
-					requestLogger.Warnf("exchangeDNS: local server failed after %dms: %v", rtt, err)
+					requestLogger.Warnf("dispatch: upstream %s err after %dms: %v,", name, rtt, err)
 				}
-				notification.NoBlockNotify(localNotificationChan, notification.Failed)
 				return
 			}
 
-			// Only fliter local result when both local and remote servers are queried.
-			if doLocal && doRemote {
-				if d.checkLocalRes(r, requestLogger) == false {
-					pool.ReleaseMsg(r)
-					requestLogger.Debugf("exchangeDNS: local result denied, rtt: %dms", rtt)
-					notification.NoBlockNotify(localNotificationChan, notification.Failed)
-					return
+			if r != nil {
+				requestLogger.Debugf("dispatch: reply from upstream %s accepted, rtt: %dms", name, rtt)
+				select {
+				case resChan <- r:
+				default:
 				}
 			}
-
-			requestLogger.Debugf("exchangeDNS: local result accepted, rtt: %dms", rtt)
-			select {
-			case resChan <- r:
-			default:
-			}
-			notification.NoBlockNotify(localNotificationChan, notification.Succeed)
 		}()
 	}
+	upstreamFailedNotificationChan := pool.GetNotificationChan()
 
-	// remote and cleaner
+	// this go routine notifies the dispatch if all upstreams are failed
+	// and release some resources.
 	go func() {
-		// remote
-		if doRemote {
-			if doLocal && d.remote.delayStart > 0 {
-				delayTimer := pool.GetTimer(d.remote.delayStart)
-				defer pool.ReleaseTimer(delayTimer)
-				select {
-				case n := <-localNotificationChan:
-					if n == notification.Succeed {
-						goto skipRemote
-					}
-				case <-delayTimer.C:
-				}
-			}
-
-			queryStart := time.Now()
-			r, err := d.remote.client.Exchange(ctx, q)
-			rtt := time.Since(queryStart).Milliseconds()
-			if err != nil {
-				if err != context.Canceled && err != context.DeadlineExceeded {
-					requestLogger.Warnf("exchangeDNS: remote server failed after %dms: %v", rtt, err)
-				}
-				goto skipRemote
-			}
-
-			requestLogger.Debugf("exchangeDNS: get reply from remote, rtt: %dms", rtt)
-			select {
-			case resChan <- r:
-			default:
-			}
-		}
-	skipRemote:
-
-		// local and remote upstreams are returned
+		// all upstreams are returned
 		upstreamWG.Wait()
 		// avoid below select{} choose upstreamFailedNotificationChan
 		// if both resChan and upstreamFailedNotificationChan are selectable
@@ -299,151 +200,23 @@ func (d *Dispatcher) exchangeDNS(ctx context.Context, q *dns.Msg) (*dns.Msg, err
 			notification.NoBlockNotify(upstreamFailedNotificationChan, notification.Failed)
 		}
 
-		// exchangeDNS is done
-		serveDNSWG.Wait()
+		// dispatch is returned
+		exchangeDNSWG.Wait()
 
 		// time to finial cleanup
-		pool.ReleaseRequestLogger(requestLogger)
+		releaseRequestLogger(requestLogger)
 		pool.ReleaseResChan(resChan)
 		pool.ReleaseNotificationChan(upstreamFailedNotificationChan)
-		if localNotificationChan != nil {
-			pool.ReleaseNotificationChan(localNotificationChan)
-		}
 	}()
 
 	select {
 	case m := <-resChan:
 		return m, nil
 	case <-upstreamFailedNotificationChan:
-		return nil, ErrServerFailed
+		return nil, ErrQueryFailed
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-func (d *Dispatcher) selectUpstreams(q *dns.Msg) (doLocal, doRemote bool) {
-	var localOnly bool = false
-
-	if d.local.client != nil {
-		switch {
-		case isUnusualType(q) && d.local.denyUnusualTypes == true: // drop unusual type
-			doLocal = false
-		case d.local.domainPolicies != nil: // match domain policies
-			p := d.local.domainPolicies.check(q.Question[0].Name)
-			switch p {
-			case policyActionForce:
-				doLocal = true
-				localOnly = true
-			case policyActionAccept:
-				doLocal = true
-			case policyActionDeny:
-				doLocal = false
-			default:
-				doLocal = true
-			}
-		default:
-			doLocal = true
-		}
-	}
-
-	if d.remote.client != nil && !localOnly {
-		doRemote = true
-	}
-	return
-}
-
-func (d *Dispatcher) checkLocalRes(res *dns.Msg, requestLogger *logrus.Entry) (ok bool) {
-	if res == nil {
-		requestLogger.Debug("acceptLocalRes: false: result is nil")
-		return false
-	}
-
-	if res.Rcode != dns.RcodeSuccess {
-		requestLogger.Debugf("acceptLocalRes: false: Rcode=%s", dns.RcodeToString[res.Rcode])
-		return false
-	}
-
-	if isUnusualType(res) {
-		if d.local.denyUnusualTypes {
-			requestLogger.Debug("acceptLocalRes: false: unusual type")
-			return false
-		}
-
-		requestLogger.Debug("acceptLocalRes: true: unusual type")
-		return true
-	}
-
-	// check CNAME
-	if d.local.domainPolicies != nil && d.local.checkCNAME == true {
-		for i := range res.Answer {
-			if cname, ok := res.Answer[i].(*dns.CNAME); ok {
-				p := d.local.domainPolicies.check(cname.Target)
-				switch p {
-				case policyActionAccept, policyActionForce:
-					requestLogger.Debug("acceptLocalRes: true: matched by CNAME")
-					return true
-				case policyActionDeny:
-					requestLogger.Debug("acceptLocalRes: false: matched by CNAME")
-					return false
-				default: // policyMissing
-					continue
-				}
-			}
-		}
-	}
-
-	// check ip
-	if d.local.ipPolicies != nil {
-		for i := range res.Answer {
-			var ip netlist.IPv6
-			var err error
-			switch tmp := res.Answer[i].(type) {
-			case *dns.A:
-				ip, err = netlist.Conv(tmp.A)
-			case *dns.AAAA:
-				ip, err = netlist.Conv(tmp.AAAA)
-			default:
-				continue
-			}
-
-			if err != nil {
-				requestLogger.Warnf("acceptLocalRes: internal err: netlist.Conv %v", err)
-				continue
-			}
-
-			p := d.local.ipPolicies.check(ip)
-			switch p {
-			case policyActionAccept:
-				requestLogger.Debug("acceptLocalRes: true: matched by ip")
-				return true
-			case policyActionDeny:
-				requestLogger.Debug("acceptLocalRes: false: matched by ip")
-				return false
-			default: // policyMissing
-				continue
-			}
-		}
-	}
-
-	if d.local.denyResultWithoutIP && !answerHasIP(res.Answer) {
-		requestLogger.Debug("acceptLocalRes: false: no ip RR")
-		return false
-	}
-
-	requestLogger.Debug("acceptLocalRes: true: default accept")
-	return true
-}
-
-func answerHasIP(rr []dns.RR) bool {
-	for i := range rr {
-		switch rr[i].(type) {
-		case *dns.A, *dns.AAAA:
-			return true
-		default:
-			continue
-		}
-	}
-	return false
 }
 
 func caPath2Pool(cas []string) (*x509.CertPool, error) {

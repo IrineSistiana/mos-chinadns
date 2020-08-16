@@ -37,14 +37,14 @@ const (
 // StartServer starts mos-chinadns. Will always return a non-nil err.
 func (d *Dispatcher) StartServer() error {
 
-	if len(d.config.Bind) == 0 {
+	if len(d.config.Dispatcher.Bind) == 0 {
 		return fmt.Errorf("no address to bind")
 	}
 
 	wg := sync.WaitGroup{}
 	errChan := make(chan error, 1) // must be a buffered chan to catch at least one err.
 
-	for _, s := range d.config.Bind {
+	for _, s := range d.config.Dispatcher.Bind {
 		ss := strings.Split(s, "://")
 		if len(ss) != 2 {
 			return fmt.Errorf("invalid bind address: %s", s)
@@ -59,7 +59,7 @@ func (d *Dispatcher) StartServer() error {
 				return err
 			}
 			defer l.Close()
-			d.entry.Infof("StartServer: tcp server started at %s", l.Addr())
+			logger.Infof("StartServer: tcp server started at %s", l.Addr())
 
 			wg.Add(1)
 			go func() {
@@ -76,7 +76,7 @@ func (d *Dispatcher) StartServer() error {
 				return err
 			}
 			defer l.Close()
-			d.entry.Infof("StartServer: udp server started at %s", l.LocalAddr())
+			logger.Infof("StartServer: udp server started at %s", l.LocalAddr())
 
 			wg.Add(1)
 			go func() {
@@ -108,7 +108,7 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 		if err != nil {
 			er, ok := err.(net.Error)
 			if ok && er.Temporary() {
-				d.entry.Warnf("ListenAndServe: Accept: temporary err: %v", err)
+				logger.Warnf("listenAndServeTCP: Accept: temporary err: %v", err)
 				time.Sleep(time.Millisecond * 100)
 				continue
 			} else {
@@ -132,8 +132,10 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 					queryCtx, cancel := context.WithTimeout(tcpConnCtx, queryTimeout)
 					defer cancel()
 
-					requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
-					defer pool.ReleaseRequestLogger(requestLogger)
+					requestLogger := getRequestLogger(q)
+					defer releaseRequestLogger(requestLogger)
+
+					requestLogger.Debugf("listenAndServeTCP %s: new query from %s", l.Addr(), c.RemoteAddr())
 
 					r, err := d.ServeDNS(queryCtx, q)
 					if err != nil {
@@ -162,7 +164,7 @@ func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
 		if err != nil {
 			er, ok := err.(net.Error)
 			if ok && er.Temporary() {
-				d.entry.Warnf("ListenAndServe: ReadFrom(): temporary err: %v", err)
+				logger.Warnf("listenAndServeUDP: ReadFrom(): temporary err: %v", err)
 				time.Sleep(time.Millisecond * 100)
 				continue
 			} else {
@@ -171,13 +173,13 @@ func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
 		}
 
 		// msg small than headerSize
-		// do nothing, avoid ddos
 		if n < 12 {
 			continue
 		}
 
 		q := new(dns.Msg)
 		err = q.Unpack(readBuf[:n])
+		// invalid msg
 		if err != nil {
 			continue
 		}
@@ -186,8 +188,10 @@ func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
 			queryCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 			defer cancel()
 
-			requestLogger := pool.GetRequestLogger(d.entry.Logger, q)
-			defer pool.ReleaseRequestLogger(requestLogger)
+			requestLogger := getRequestLogger(q)
+			defer releaseRequestLogger(requestLogger)
+
+			requestLogger.Debugf("listenAndServeTCP %s: new query from %s", l.LocalAddr(), from)
 
 			r, err := d.ServeDNS(queryCtx, q)
 			if err != nil {
@@ -211,17 +215,4 @@ func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
 			}
 		}()
 	}
-}
-
-// ListenAndServe listen on a port and start the server. Only support tcp and udp network.
-// Will always return a non-nil err.
-func (d *Dispatcher) ListenAndServe(network, addr string, maxUDPSize int) error {
-
-	switch network {
-	case "tcp":
-
-	case "udp":
-
-	}
-	return fmt.Errorf("unknown network: %s", network)
 }
