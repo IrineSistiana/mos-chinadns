@@ -36,7 +36,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-func Test_upstream(t *testing.T) {
+func Test_basicUpstream(t *testing.T) {
 	testUpstream := func(name string, u Upstream) {
 		wg := sync.WaitGroup{}
 		errs := make([]error, 0)

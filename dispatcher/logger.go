@@ -15,13 +15,21 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package pool
+package dispatcher
 
 import (
 	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
 	"sync"
 )
+
+var (
+	logger = logrus.New()
+)
+
+func SetLoggerLevel(level logrus.Level) {
+	logger.SetLevel(level)
+}
 
 var requestLoggerPool = sync.Pool{
 	New: func() interface{} {
@@ -35,7 +43,7 @@ var requestLoggerPool = sync.Pool{
 	},
 }
 
-func GetRequestLogger(logger *logrus.Logger, q *dns.Msg) *logrus.Entry {
+func getRequestLogger(q *dns.Msg) *logrus.Entry {
 	entry := requestLoggerPool.Get().(*logrus.Entry)
 	entry.Logger = logger
 	entry.Data["id"] = q.Id
@@ -43,7 +51,7 @@ func GetRequestLogger(logger *logrus.Logger, q *dns.Msg) *logrus.Entry {
 	return entry
 }
 
-func ReleaseRequestLogger(entry *logrus.Entry) {
+func releaseRequestLogger(entry *logrus.Entry) {
 	entry.Data["id"] = nil
 	entry.Data["question"] = nil
 	entry.Logger = nil

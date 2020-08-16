@@ -64,25 +64,20 @@ var (
 
 func main() {
 
+	//wait for signals
+	go func() {
+		osSignals := make(chan os.Signal, 1)
+		signal.Notify(osSignals, os.Interrupt, os.Kill, syscall.SIGTERM)
+		s := <-osSignals
+		logrus.Infof("main: received signal: %v, program exited", s)
+		os.Exit(0)
+	}()
+
 	flag.Parse()
 	runtime.GOMAXPROCS(*cpu)
 
-	logger := logrus.New()
-	entry := logrus.NewEntry(logger)
-
-	switch {
-	case *quiet:
-		logger.SetLevel(logrus.ErrorLevel)
-	case *debug:
-		logger.SetLevel(logrus.DebugLevel)
-		go printStatus(entry, time.Second*30)
-	default:
-		logger.SetLevel(logrus.InfoLevel)
-	}
-
 	//DEBUG ONLY
 	//if len(*pprofAddr) != 0 {
-	//	entry.Infof("pprof is listening at %s", *pprofAddr)
 	//	go func() {
 	//		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
 	//			entry.Fatal("pprof backend is exited: %v", err)
@@ -93,32 +88,38 @@ func main() {
 	// show version
 	if *showVersion {
 		fmt.Printf("%s\n", version)
-		return
+		os.Exit(0)
 	}
 
 	// idle timeout test
 	if len(*probeDoTTimeout) != 0 {
-		probTCPTimeout(*probeDoTTimeout, true, entry)
-		return
+		err := probTCPTimeout(*probeDoTTimeout, true)
+		if err != nil {
+			logrus.Errorf("failed to prob server tcp idle connection timeout: %v", err)
+		}
+		os.Exit(0)
 	}
 	if len(*probeTCPTimeout) != 0 {
-		probTCPTimeout(*probeTCPTimeout, false, entry)
-		return
+		err := probTCPTimeout(*probeTCPTimeout, false)
+		if err != nil {
+			logrus.Errorf("failed to prob server tls idle connection timeout: %v", err)
+		}
+		os.Exit(0)
 	}
 
 	// show summary
-	entry.Infof("main: mos-chinadns ver: %s", version)
-	entry.Infof("main: arch: %s os: %s", runtime.GOARCH, runtime.GOOS)
+	logrus.Infof("main: mos-chinadns ver: %s", version)
+	logrus.Infof("main: arch: %s os: %s", runtime.GOARCH, runtime.GOOS)
 
 	//gen config
 	if len(*genConfigTo) != 0 {
 		err := dispatcher.GenConfig(*genConfigTo)
 		if err != nil {
-			entry.Errorf("main: can not generate config template, %v", err)
+			logrus.Fatalf("main: can not generate config template, %v", err)
 		} else {
-			entry.Info("main: config template generated")
+			logrus.Info("main: config template generated")
 		}
-		return
+		os.Exit(0)
 	}
 
 	// try to change working dir to os.Executable() or *dir
@@ -126,7 +127,7 @@ func main() {
 	if *dirFollowExecutable {
 		ex, err := os.Executable()
 		if err != nil {
-			entry.Fatalf("main: get executable path: %v", err)
+			logrus.Fatalf("main: failed to get executable path: %v", err)
 		}
 		wd = filepath.Dir(ex)
 	} else {
@@ -137,101 +138,104 @@ func main() {
 	if len(wd) != 0 {
 		err := os.Chdir(wd)
 		if err != nil {
-			entry.Fatalf("main: change the current working directory: %v", err)
+			logrus.Fatalf("main: failed to change the current working directory: %v", err)
 		}
-		entry.Infof("main: current working directory: %s", wd)
+		logrus.Infof("main: current working directory: %s", wd)
 	}
 
 	//checking
 	if len(*configPath) == 0 {
-		entry.Fatal("main: need a config file")
+		logrus.Fatal("main: need a config file")
 	}
 
 	c, err := dispatcher.LoadConfig(*configPath)
 	if err != nil {
-		entry.Fatalf("main: can not load config file, %v", err)
+		logrus.Fatalf("main: can not load config file, %v", err)
 	}
 
-	d, err := dispatcher.InitDispatcher(c, entry)
+	d, err := dispatcher.InitDispatcher(c)
 	if err != nil {
-		entry.Fatalf("main: init dispatcher: %v", err)
+		logrus.Fatalf("main: failed to init dispatcher: %v", err)
 	}
 
-	go func() {
-		err := d.StartServer()
-		if err != nil {
-			entry.Fatalf("main: StartServer: %v", err)
-		}
-	}()
+	switch {
+	case *quiet:
+		dispatcher.SetLoggerLevel(logrus.ErrorLevel)
+	case *debug:
+		dispatcher.SetLoggerLevel(logrus.DebugLevel)
+		go printStatus(time.Second * 30)
+	default:
+		dispatcher.SetLoggerLevel(logrus.InfoLevel)
+	}
 
-	//wait signals
-	osSignals := make(chan os.Signal, 1)
-	signal.Notify(osSignals, os.Interrupt, os.Kill, syscall.SIGTERM)
-	s := <-osSignals
-	entry.Infof("main: exiting: signal: %v", s)
-	os.Exit(0)
+	err = d.StartServer()
+	if err != nil {
+		logrus.Fatalf("main: server exited with err: %v", err)
+	}
 }
 
-func printStatus(entry *logrus.Entry, d time.Duration) {
+func printStatus(d time.Duration) {
 	m := new(runtime.MemStats)
 	for {
 		time.Sleep(d)
 		runtime.ReadMemStats(m)
-		entry.Infof("printStatus: HeapObjects: %d NumGC: %d PauseTotalNs: %d, NumGoroutine: %d", m.HeapObjects, m.NumGC, m.PauseTotalNs, runtime.NumGoroutine())
+		logrus.Infof("printStatus: HeapObjects: %d NumGC: %d PauseTotalNs: %d, NumGoroutine: %d", m.HeapObjects, m.NumGC, m.PauseTotalNs, runtime.NumGoroutine())
 	}
 }
 
-func probTCPTimeout(addr string, isTLS bool, entry *logrus.Entry) {
+func probTCPTimeout(addr string, isTLS bool) error {
 	q := new(dns.Msg)
 	q.SetQuestion("www.google.com.", dns.TypeA)
 
 	var conn net.Conn
 	var err error
 
-	entry.Infof("connecting to %s", addr)
+	logrus.Infof("connecting to %s", addr)
 	if isTLS {
 		tlsConfig := new(tls.Config)
 		tlsConfig.InsecureSkipVerify = true
 		tlsConn, err := tls.Dial("tcp", addr, tlsConfig)
 		tlsConn.SetDeadline(time.Now().Add(time.Second * 5))
-		entry.Info("connected, start TLS handshaking")
+		logrus.Info("connected, start TLS handshaking")
 		err = tlsConn.Handshake()
 		if err != nil {
-			entry.Fatal(err)
+			return fmt.Errorf("tls handshake failed: %v", err)
 		}
-		entry.Info("TLS handshake completed")
+		logrus.Info("TLS handshake completed")
 		conn = tlsConn
 	} else {
 		conn, err = net.Dial("tcp", addr)
 		if err != nil {
-			entry.Fatal(err)
+			return fmt.Errorf("can not connect to server: %v", err)
 		}
 	}
 	defer conn.Close()
 
-	entry.Info("sending request")
-	conn.SetDeadline(time.Now().Add(time.Second * 5))
+	logrus.Info("sending request")
+	conn.SetDeadline(time.Now().Add(time.Second * 3))
 	dc := dns.Conn{Conn: conn}
 	err = dc.WriteMsg(q)
 	if err != nil {
-		entry.Fatal(err)
+		return fmt.Errorf("failed to write probe msg: %v", err)
 	}
-	entry.Info("request sent, waiting for response")
+	logrus.Info("request sent, waiting for response")
 	_, err = dc.ReadMsg()
 	if err != nil {
-		entry.Fatal(err)
+		return fmt.Errorf("failed to read probe msg response: %v", err)
 	}
-	entry.Info("response received")
-	entry.Info("waiting for peer to close the connection...")
-	entry.Info("this may take a while...")
-	entry.Info("if you think its long enough, to cancel the test, press Ctrl + C")
+	logrus.Info("response received")
+	logrus.Info("waiting for peer to close the connection...")
+	logrus.Info("this may take a while...")
+	logrus.Info("if you think its long enough, to cancel the test, press Ctrl + C")
 	conn.SetDeadline(time.Now().Add(time.Minute * 60))
 
 	start := time.Now()
-	_, err = conn.Read(make([]byte, 1))
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
 	if err == nil {
-		entry.Fatal("peer sent unexpect data")
+		return fmt.Errorf("recieved unexpected data from peer: %v", buf[:n])
 	}
 
-	entry.Infof("connection cloesed by peer after %s", time.Since(start))
+	logrus.Infof("connection closed by peer after %.2f", time.Since(start).Seconds())
+	return nil
 }

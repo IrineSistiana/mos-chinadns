@@ -102,7 +102,7 @@ func writeRawMsgToTCP(c io.Writer, b []byte) (n int, err error) {
 	return c.Write(wb)
 }
 
-func readMsgFromUDP(c io.Reader) (m *dns.Msg, brokenDataLeft int, n int, err error) {
+func readMsgFromUDP(c io.Reader) (m *dns.Msg, _ int, n int, err error) {
 	m, n, err = readMsgFromUDPWithLimit(c, MaxUDPSize)
 	return m, 0, n, err
 }

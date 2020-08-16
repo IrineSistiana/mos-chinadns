@@ -19,38 +19,50 @@ package dispatcher
 
 import (
 	"fmt"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/domainlist"
-	netlist "github.com/IrineSistiana/net-list"
-	"github.com/sirupsen/logrus"
 	"strings"
+	"sync"
+
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/domainlist"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
+	"github.com/sirupsen/logrus"
 )
 
 type policyAction uint8
+type policyFinalAction uint8
 
 const (
-	policyActionForceStr   string = "force"
 	policyActionAcceptStr  string = "accept"
 	policyActionDenyStr    string = "deny"
 	policyActionDenyAllStr string = "deny_all"
 
-	policyActionForce policyAction = iota
-	policyActionAccept
+	policyActionAccept policyAction = iota
 	policyActionDeny
 	policyActionDenyAll
-	policyActionMissing
+
+	policyFinalActionAccept policyFinalAction = iota
+	policyFinalActionDeny
+	policyFinalActionOnHold
 )
 
-var convIPPolicyActionStr = map[string]policyAction{
+func (pa policyAction) ToPFA() policyFinalAction {
+	switch pa {
+	case policyActionAccept:
+		return policyFinalActionAccept
+	case policyActionDeny, policyActionDenyAll:
+		return policyFinalActionDeny
+	default:
+		panic("unknown policyAction")
+	}
+}
+
+var convPolicyStringToAction = map[string]policyAction{
 	policyActionAcceptStr:  policyActionAccept,
 	policyActionDenyStr:    policyActionDeny,
 	policyActionDenyAllStr: policyActionDenyAll,
 }
 
-var convDomainPolicyActionStr = map[string]policyAction{
-	policyActionForceStr:   policyActionForce,
-	policyActionAcceptStr:  policyActionAccept,
-	policyActionDenyStr:    policyActionDeny,
-	policyActionDenyAllStr: policyActionDenyAll,
+type rawPolicies struct {
+	policies []rawPolicy
 }
 
 type rawPolicy struct {
@@ -76,15 +88,16 @@ type domainPolicy struct {
 	list   *domainlist.List
 }
 
-func convPoliciesStr(s string, f map[string]policyAction) ([]rawPolicy, error) {
-	ps := make([]rawPolicy, 0)
+func convPoliciesStr(s string) (*rawPolicies, error) {
+	rps := new(rawPolicies)
+	rps.policies = make([]rawPolicy, 0)
 
 	policiesStr := strings.Split(s, "|")
 	for i := range policiesStr {
 		pStr := strings.SplitN(policiesStr[i], ":", 2)
 
 		p := rawPolicy{}
-		action, ok := f[pStr[0]]
+		action, ok := convPolicyStringToAction[pStr[0]]
 		if !ok {
 			return nil, fmt.Errorf("unknown action [%s]", pStr[0])
 		}
@@ -92,16 +105,18 @@ func convPoliciesStr(s string, f map[string]policyAction) ([]rawPolicy, error) {
 
 		if len(pStr) == 2 {
 			p.args = pStr[1]
+		} else {
+			p.args = ""
 		}
 
-		ps = append(ps, p)
+		rps.policies = append(rps.policies, p)
 	}
 
-	return ps, nil
+	return rps, nil
 }
 
-func newIPPolicies(psString string, entry *logrus.Entry) (*ipPolicies, error) {
-	psArgs, err := convPoliciesStr(psString, convIPPolicyActionStr)
+func newIPPolicies(s string) (*ipPolicies, error) {
+	rps, err := convPoliciesStr(s)
 	if err != nil {
 		return nil, fmt.Errorf("invalid ip policies string, %w", err)
 	}
@@ -109,18 +124,17 @@ func newIPPolicies(psString string, entry *logrus.Entry) (*ipPolicies, error) {
 		policies: make([]ipPolicy, 0),
 	}
 
-	for i := range psArgs {
+	for i := range rps.policies {
 		p := ipPolicy{}
-		p.action = psArgs[i].action
+		p.action = rps.policies[i].action
 
-		file := psArgs[i].args
+		file := rps.policies[i].args
 		if len(file) != 0 {
-			list, err := netlist.NewListFromFile(file)
+			list, err := loadIPPolicy(file)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load ip file from %s, %w", file, err)
 			}
 			p.list = list
-			entry.Infof("newIPPolicies: ip list %s loaded, length %d", file, list.Len())
 		}
 
 		ps.policies = append(ps.policies, p)
@@ -129,23 +143,22 @@ func newIPPolicies(psString string, entry *logrus.Entry) (*ipPolicies, error) {
 	return ps, nil
 }
 
-// ps can not be nil
-func (ps *ipPolicies) check(ip netlist.IPv6) policyAction {
+func (ps *ipPolicies) check(ip netlist.IPv6) policyFinalAction {
 	for p := range ps.policies {
 		if ps.policies[p].action == policyActionDenyAll {
-			return policyActionDeny
+			return policyFinalActionDeny
 		}
 
 		if ps.policies[p].list != nil && ps.policies[p].list.Contains(ip) {
-			return ps.policies[p].action
+			return ps.policies[p].action.ToPFA()
 		}
 	}
 
-	return policyActionMissing
+	return policyFinalActionOnHold
 }
 
-func newDomainPolicies(psString string, entry *logrus.Entry) (*domainPolicies, error) {
-	psArgs, err := convPoliciesStr(psString, convDomainPolicyActionStr)
+func newDomainPolicies(s string) (*domainPolicies, error) {
+	rps, err := convPoliciesStr(s)
 	if err != nil {
 		return nil, fmt.Errorf("invalid domain policies string, %w", err)
 	}
@@ -153,18 +166,17 @@ func newDomainPolicies(psString string, entry *logrus.Entry) (*domainPolicies, e
 		policies: make([]domainPolicy, 0),
 	}
 
-	for i := range psArgs {
+	for i := range rps.policies {
 		p := domainPolicy{}
-		p.action = psArgs[i].action
+		p.action = rps.policies[i].action
 
-		file := psArgs[i].args
+		file := rps.policies[i].args
 		if len(file) != 0 {
-			list, err := domainlist.LoadFormFile(file)
+			list, err := loadDomainPolicy(file)
 			if err != nil {
 				return nil, fmt.Errorf("failed to load domain file from %s, %w", file, err)
 			}
 			p.list = list
-			entry.Infof("newDomainPolicies: domain list %s loaded, length %d", file, list.Len())
 		}
 
 		ps.policies = append(ps.policies, p)
@@ -173,17 +185,69 @@ func newDomainPolicies(psString string, entry *logrus.Entry) (*domainPolicies, e
 	return ps, nil
 }
 
-// check: ps can not be nil
-func (ps *domainPolicies) check(fqdn string) policyAction {
+func (ps *domainPolicies) check(fqdn string) policyFinalAction {
 	for p := range ps.policies {
 		if ps.policies[p].action == policyActionDenyAll {
-			return policyActionDeny
+			return policyFinalActionDeny
 		}
 
 		if ps.policies[p].list != nil && ps.policies[p].list.Has(fqdn) {
-			return ps.policies[p].action
+			return ps.policies[p].action.ToPFA()
 		}
 	}
 
-	return policyActionMissing
+	return policyFinalActionOnHold
+}
+
+type policyCache struct {
+	l     sync.Mutex
+	cache map[string]interface{}
+}
+
+var globePolicyCache = policyCache{cache: make(map[string]interface{})}
+
+func loadDomainPolicy(f string) (*domainlist.List, error) {
+	globePolicyCache.l.Lock()
+	defer globePolicyCache.l.Unlock()
+
+	if e, ok := globePolicyCache.cache[f]; ok { // cache hit
+		if list, ok := e.(*domainlist.List); ok {
+			return list, nil // load from cache
+		} else {
+			return nil, fmt.Errorf("%s is loaded but not a domain list", f)
+		}
+	}
+
+	// load from file
+	list, err := domainlist.LoadFormFile(f)
+	if err != nil {
+		return nil, err
+	}
+
+	logrus.Infof("loadDomainPolicy: domain list %s loaded, length %d", f, list.Len())
+	globePolicyCache.cache[f] = list // cache the list
+	return list, nil
+}
+
+func loadIPPolicy(f string) (*netlist.List, error) {
+	globePolicyCache.l.Lock()
+	defer globePolicyCache.l.Unlock()
+
+	if e, ok := globePolicyCache.cache[f]; ok { // cache hit
+		if list, ok := e.(*netlist.List); ok {
+			return list, nil // load from cache
+		} else {
+			return nil, fmt.Errorf("%s is loaded but not a ip list", f)
+		}
+	}
+
+	// load from file
+	list, err := netlist.NewListFromFile(f)
+	if err != nil {
+		return nil, err
+	}
+
+	logrus.Infof("loadIPPolicy: ip list %s loaded, length %d", f, list.Len())
+	globePolicyCache.cache[f] = list // cache the list
+	return list, nil
 }

@@ -32,6 +32,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
+	"golang.org/x/sync/singleflight"
+
 	"golang.org/x/net/http2"
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
@@ -53,31 +56,65 @@ type Upstream interface {
 	Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error)
 }
 
-// upstreamCommon represents a udp/tcp/tls upstream
-type upstreamCommon struct {
-	dialNewConn func() (net.Conn, error)
-	writeMsg    func(c io.Writer, m *dns.Msg) (int, error)
-	readMsg     func(c io.Reader) (m *dns.Msg, brokenDataLeft int, n int, err error)
-
-	cp *connPool
-}
-
-// upstream represents upstream with a concurrent limitation
+// upstream represents mos-chinadns upstream.
 type upstream struct {
 	bk    *bucket
 	edns0 struct {
-		clientSubnet   *dns.EDNS0_SUBNET
-		forceOverwrite bool
+		clientSubnet *dns.EDNS0_SUBNET
+		overwriteECS bool
 	}
+	policies struct {
+		ip     *ipPolicies
+		domain *domainPolicies
 
-	u Upstream
+		denyErrorRcode       bool
+		denyUnhandlableTypes bool
+		denyEmptyIPReply     bool
+		checkCNAME           bool
+	}
+	deduplicate bool
+
+	singleFlightGroup singleflight.Group
+	u                 Upstream
+}
+
+func isUnhandlableType(q *dns.Msg) bool {
+	return q.Opcode != dns.OpcodeQuery || len(q.Question) != 1 || q.Question[0].Qclass != dns.ClassINET || (q.Question[0].Qtype != dns.TypeA && q.Question[0].Qtype != dns.TypeAAAA)
 }
 
 var (
 	errTooManyConcurrentQueries = errors.New("too many concurrent queries")
+	errInternalTypeMismatch     = errors.New("internal err: interface type mismatched")
 )
 
 func (u *upstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
+	// deduplicate
+	if u.deduplicate {
+		key, err := getMsgKey(q)
+		if err != nil {
+			return nil, fmt.Errorf("failed to caculate msg key, %v", err)
+		}
+
+		v, err, _ := u.singleFlightGroup.Do(key, func() (interface{}, error) {
+			defer u.singleFlightGroup.Forget(key)
+			return u.exchange(ctx, q)
+		})
+
+		if err != nil {
+			return nil, err
+		}
+		r, ok := v.(*dns.Msg)
+		if !ok {
+			return nil, errInternalTypeMismatch
+		}
+		return r, nil
+	}
+
+	return u.exchange(ctx, q)
+}
+
+func (u *upstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
+	// get token
 	if u.bk != nil {
 		if u.bk.acquire() == false {
 			return nil, errTooManyConcurrentQueries
@@ -85,14 +122,140 @@ func (u *upstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 		defer u.bk.release()
 	}
 
+	// check msg type
+	var msgIsUnhandlableType bool
+	if msgIsUnhandlableType = isUnhandlableType(q); msgIsUnhandlableType {
+		if u.policies.denyUnhandlableTypes {
+			return nil, nil
+		} else {
+			return u.u.Exchange(ctx, q)
+		}
+	}
+
+	// check domain
+	var domainPolicyAction = policyFinalActionOnHold
+	if u.policies.domain != nil {
+		domainPolicyAction = u.policies.domain.check(q.Question[0].Name)
+		if domainPolicyAction == policyFinalActionDeny {
+			return nil, nil
+		}
+	}
+
+	// append edns0 client subnet
 	if u.edns0.clientSubnet != nil {
-		qWithECS := appendECS(q, u.edns0.clientSubnet, u.edns0.forceOverwrite, true)
+		qWithECS := appendECS(q, u.edns0.clientSubnet, u.edns0.overwriteECS, true)
 		if qWithECS != nil {
 			return u.u.Exchange(ctx, qWithECS)
 		}
 	}
 
-	return u.u.Exchange(ctx, q)
+	// send to upstream
+	r, err = u.u.Exchange(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+
+	// this reply should be accepted right away, skip other checks.
+	if domainPolicyAction == policyFinalActionAccept || msgIsUnhandlableType {
+		return r, nil
+	}
+
+	// check Rcode
+	if u.policies.denyErrorRcode && r.Rcode != dns.RcodeSuccess {
+		return nil, nil
+	}
+
+	// check CNAME
+	if u.policies.domain != nil && u.policies.checkCNAME == true {
+		switch checkMsgCNAME(u.policies.domain, r) {
+		case policyFinalActionDeny:
+			return nil, nil
+		case policyFinalActionAccept:
+			return r, nil
+		}
+	}
+
+	// check ip
+	if u.policies.ip != nil && checkMsgIP(u.policies.ip, r) == policyFinalActionDeny {
+		return nil, nil
+	}
+	if u.policies.denyEmptyIPReply && checkMsgHasValidIP(r) == false {
+		return nil, nil
+	}
+
+	return r, err
+}
+
+func getMsgKey(m *dns.Msg) (string, error) {
+	buf := pool.AcquirePackBuf()
+	defer pool.ReleasePackBuf(buf)
+
+	mWithZeroID := pool.GetMsg()
+	defer pool.ReleaseMsg(mWithZeroID)
+	*mWithZeroID = *m  // shadow copy
+	mWithZeroID.Id = 0 // change id to 0
+
+	wireMsg, err := mWithZeroID.PackBuffer(buf)
+	if err != nil {
+		return "", err
+	}
+	return string(wireMsg), nil
+}
+
+func checkMsgIP(p *ipPolicies, m *dns.Msg) policyFinalAction {
+	for i := range m.Answer {
+		var ip net.IP
+		switch rr := m.Answer[i].(type) {
+		case *dns.A:
+			ip = rr.A
+		case *dns.AAAA:
+			ip = rr.AAAA
+		default:
+			continue
+		}
+
+		if ipv6 := ip.To16(); ipv6 == nil {
+			continue
+		} else {
+			ip = ipv6
+		}
+
+		pfa := p.check(netlist.Conv(ip))
+		switch pfa {
+		case policyFinalActionAccept, policyFinalActionDeny:
+			return pfa
+		default: // policyFinalActionOnHold
+			continue
+		}
+	}
+	return policyFinalActionOnHold
+}
+
+func checkMsgCNAME(p *domainPolicies, m *dns.Msg) policyFinalAction {
+	for i := range m.Answer {
+		if cname, ok := m.Answer[i].(*dns.CNAME); ok {
+			pfa := p.check(cname.Target)
+			switch pfa {
+			case policyFinalActionAccept, policyFinalActionDeny:
+				return pfa
+			default: // policyFinalActionOnHold
+				continue
+			}
+		}
+	}
+	return policyFinalActionOnHold
+}
+
+func checkMsgHasValidIP(m *dns.Msg) bool {
+	for i := range m.Answer {
+		switch m.Answer[i].(type) {
+		case *dns.A, *dns.AAAA:
+			return true
+		default:
+			continue
+		}
+	}
+	return false
 }
 
 // NewUpstream inits a upstream instance base on the config.
@@ -196,10 +359,12 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 
 	u := &upstream{u: basicUpstream}
 
+	// set MaxConcurrentQueries
 	if sc.MaxConcurrentQueries > 0 {
 		u.bk = newBucket(sc.MaxConcurrentQueries)
 	}
 
+	// load edns0
 	if len(sc.EDNS0.ClientSubnet) != 0 {
 		subnet, err := newEDNS0SubnetFromStr(sc.EDNS0.ClientSubnet)
 		if err != nil {
@@ -207,8 +372,38 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 		}
 		u.edns0.clientSubnet = subnet
 	}
+	u.edns0.overwriteECS = sc.EDNS0.OverwriteECS
+
+	// load policies
+	if len(sc.Policies.IP) != 0 {
+		p, err := newIPPolicies(sc.Policies.IP)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load ip policies, %w", err)
+		}
+		u.policies.ip = p
+	}
+	if len(sc.Policies.Domain) != 0 {
+		p, err := newDomainPolicies(sc.Policies.Domain)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load domain policies, %w", err)
+		}
+		u.policies.domain = p
+	}
+	u.policies.checkCNAME = sc.Policies.CheckCNAME
+	u.policies.denyUnhandlableTypes = sc.Policies.DenyUnhandlableTypes
+	u.policies.denyErrorRcode = sc.Policies.DenyErrorRcode
+	u.policies.denyEmptyIPReply = sc.Policies.DenyEmptyIPReply
 
 	return u, nil
+}
+
+// upstreamCommon represents a udp/tcp/tls upstream
+type upstreamCommon struct {
+	dialNewConn func() (net.Conn, error)
+	writeMsg    func(c io.Writer, m *dns.Msg) (int, error)
+	readMsg     func(c io.Reader) (m *dns.Msg, brokenDataLeft int, n int, err error)
+
+	cp *connPool
 }
 
 func (u *upstreamCommon) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
@@ -240,13 +435,13 @@ func (u *upstreamCommon) exchange(ctx context.Context, q *dns.Msg, forceNewConn 
 			return nil, err
 		}
 	} else {
-		dc.msgID++
+		dc.msgIDCounter++
 	}
 
 	qWithNewID := pool.GetMsg()
 	defer pool.ReleaseMsg(qWithNewID)
 	*qWithNewID = *q // shadow copy, we just want to change its ID
-	qWithNewID.Id = dc.msgID
+	qWithNewID.Id = dc.msgIDCounter
 
 	// write first
 	dc.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
@@ -268,7 +463,7 @@ func (u *upstreamCommon) exchange(ctx context.Context, q *dns.Msg, forceNewConn 
 		n, err = io.ReadFull(dc, buf)
 		pool.ReleaseMsgBuf(buf)
 		if n > 0 {
-			dc.lastRead = time.Now()
+			dc.peerLastActiveTime = time.Now()
 			dc.frameLeft = dc.frameLeft - n
 		}
 		if err != nil {
@@ -279,13 +474,13 @@ func (u *upstreamCommon) exchange(ctx context.Context, q *dns.Msg, forceNewConn 
 read:
 	r, dc.frameLeft, n, err = u.readMsg(dc.Conn)
 	if n > 0 {
-		dc.lastRead = time.Now()
+		dc.peerLastActiveTime = time.Now()
 	}
 	if err != nil {
 		goto readErr
 	}
 
-	if r.Id != dc.msgID {
+	if r.Id != dc.msgIDCounter {
 		if !isNewConn {
 			// this connection is reused, data might be the reply
 			// of a previous qRaw, not this qRaw.
@@ -328,28 +523,28 @@ readErr:
 }
 
 type connPool struct {
-	sync.Mutex
 	maxSize         int
 	ttl             time.Duration
 	cleanerInterval time.Duration
 
+	sync.Mutex
 	pool      []*dnsConn
 	lastClean time.Time
 }
 
 type dnsConn struct {
 	net.Conn
-	frameLeft int
-	msgID     uint16
-	lastRead  time.Time
+	frameLeft          int
+	msgIDCounter       uint16
+	peerLastActiveTime time.Time
 }
 
 func newDNSConn(c net.Conn, lastRead time.Time) *dnsConn {
 	return &dnsConn{
-		Conn:      c,
-		frameLeft: 0,
-		msgID:     dns.Id(),
-		lastRead:  lastRead,
+		Conn:               c,
+		frameLeft:          0,
+		msgIDCounter:       dns.Id(),
+		peerLastActiveTime: lastRead,
 	}
 }
 
@@ -375,7 +570,7 @@ func (p *connPool) runCleaner(force bool) {
 		res := p.pool[:0]
 		for i := range p.pool {
 			// remove expired conns
-			if time.Since(p.pool[i].lastRead) < p.ttl {
+			if time.Since(p.pool[i].peerLastActiveTime) < p.ttl {
 				res = append(res, p.pool[i])
 			} else { // expired, release the resources
 				p.pool[i].Conn.Close()
@@ -398,7 +593,7 @@ func (p *connPool) runCleaner(force bool) {
 			}
 
 			// then remove expired connections
-			if time.Since(p.pool[i].lastRead) < p.ttl {
+			if time.Since(p.pool[i].peerLastActiveTime) < p.ttl {
 				res = append(res, p.pool[i])
 			} else {
 				p.pool[i].Conn.Close()
@@ -446,7 +641,7 @@ func (p *connPool) get() (dc *dnsConn) {
 		p.pool[len(p.pool)-1] = nil
 		p.pool = p.pool[:len(p.pool)-1]
 
-		if time.Since(dc.lastRead) > p.ttl {
+		if time.Since(dc.peerLastActiveTime) > p.ttl {
 			dc.Conn.Close() // expired
 			// the last elem is expired, means all elems are expired
 			// remove them asap

@@ -1,13 +1,13 @@
-//     Copyright (C) 2018 - 2020, IrineSistiana
+//     Copyright (C) 2020, IrineSistiana
 //
-//     This file is part of IrineSistiana/net-list.
+//     This file is part of mos-chinadns.
 //
-//     IrineSistiana/net-list is free software: you can redistribute it and/or modify
+//     mos-chinadns is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU General Public License as published by
 //     the Free Software Foundation, either version 3 of the License, or
 //     (at your option) any later version.
 //
-//     IrineSistiana/net-list is distributed in the hope that it will be useful,
+//     mos-chinadns is distributed in the hope that it will be useful,
 //     but WITHOUT ANY WARRANTY; without even the implied warranty of
 //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 //     GNU General Public License for more details.
@@ -19,7 +19,7 @@ package netlist
 
 import (
 	"encoding/binary"
-	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -47,11 +47,6 @@ type Net struct {
 	mask mask
 }
 
-var (
-	//ErrParseCIDR raised by ParseCIDR()
-	ErrParseCIDR = errors.New("error CIDR format")
-)
-
 //NewNet returns a new IPNet, mask should be an ipv6 mask,
 //which means you should +96 if you have an ipv4 mask.
 func NewNet(ipv6 IPv6, mask uint) (n Net) {
@@ -63,7 +58,7 @@ func NewNet(ipv6 IPv6, mask uint) (n Net) {
 	return
 }
 
-//Contains reports whether the ipnet includes ip.
+//Contains reports whether the net includes the ip.
 func (net Net) Contains(ip IPv6) bool {
 	for i := 0; i < IPSize; i++ {
 		if ip[i]&net.mask[i] == net.ip[i] {
@@ -74,17 +69,11 @@ func (net Net) Contains(ip IPv6) bool {
 	return true
 }
 
-var (
-	//ErrNotIPv6 raised by Conv()
-	ErrNotIPv6 = errors.New("ip is not a valid ipv6 address")
-)
-
 //Conv converts ip to type IPv6.
-//ip must be a valid ipv6 address, or ErrNotIPv6 will return.
-func Conv(ip net.IP) (ipv6 IPv6, err error) {
-	if ip = ip.To16(); ip == nil {
-		err = ErrNotIPv6
-		return
+//ip must be a valid 16-byte ipv6 address or Conv() will panic
+func Conv(ip net.IP) (ipv6 IPv6) {
+	if len(ip) != 16 {
+		panic("ip is not a 16-byte ipv6")
 	}
 
 	switch intSize {
@@ -112,16 +101,16 @@ func ParseCIDR(s string) (Net, error) {
 		addrStr, maskStr := sub[0], sub[1]
 
 		//ip
-		ip := net.ParseIP(addrStr)
-		ipv6, err := Conv(ip)
-		if err != nil {
-			return Net{}, err
+		ip := net.ParseIP(addrStr).To16()
+		if ip == nil {
+			return Net{}, fmt.Errorf("invalid cidr ip string %s", s)
 		}
+		ipv6 := Conv(ip)
 
 		//mask
 		maskLen, err := strconv.ParseUint(maskStr, 10, 0)
 		if err != nil {
-			return Net{}, err
+			return Net{}, fmt.Errorf("invalid cidr mask %s", s)
 		}
 
 		//if string is a ipv4 addr, add 96
@@ -129,14 +118,18 @@ func ParseCIDR(s string) (Net, error) {
 			maskLen = maskLen + 96
 		}
 
+		if maskLen > 128 {
+			return Net{}, fmt.Errorf("cidr mask %s overflow", s)
+		}
+
 		return NewNet(ipv6, uint(maskLen)), nil
 	}
 
-	ipv6, err := Conv(net.ParseIP(s))
-	if err != nil {
-		return Net{}, err
+	ip := net.ParseIP(s).To16()
+	if ip == nil {
+		return Net{}, fmt.Errorf("invalid cidr ip string %s", s)
 	}
-
+	ipv6 := Conv(ip)
 	return NewNet(ipv6, 128), nil
 }
 
