@@ -74,10 +74,11 @@ type upstream struct {
 		denyEmptyIPReply     bool
 		checkCNAME           bool
 	}
-	deduplicate bool
 
+	deduplicate       bool
 	singleFlightGroup singleflight.Group
-	u                 Upstream
+
+	u Upstream
 }
 
 func isUnhandlableType(q *dns.Msg) bool {
@@ -97,7 +98,7 @@ func (u *upstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 			return nil, fmt.Errorf("failed to caculate msg key, %v", err)
 		}
 
-		v, err, _ := u.singleFlightGroup.Do(key, func() (interface{}, error) {
+		v, err, shared := u.singleFlightGroup.Do(key, func() (interface{}, error) {
 			defer u.singleFlightGroup.Forget(key)
 			return u.exchange(ctx, q)
 		})
@@ -105,11 +106,19 @@ func (u *upstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 		if err != nil {
 			return nil, err
 		}
-		r, ok := v.(*dns.Msg)
+
+		rUnsafe, ok := v.(*dns.Msg)
 		if !ok {
 			return nil, errInternalTypeMismatch
 		}
-		return r, nil
+
+		if shared { // shared reply may has different id and is not safe to modify.
+			r = rUnsafe.Copy()
+			r.Id = q.Id
+			return r, nil
+		}
+
+		return rUnsafe, nil
 	}
 
 	return u.exchange(ctx, q)
@@ -395,6 +404,8 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 	u.policies.denyUnhandlableTypes = sc.Policies.DenyUnhandlableTypes
 	u.policies.denyErrorRcode = sc.Policies.DenyErrorRcode
 	u.policies.denyEmptyIPReply = sc.Policies.DenyEmptyIPReply
+
+	u.deduplicate = sc.Deduplicate
 
 	return u, nil
 }
