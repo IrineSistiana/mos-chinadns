@@ -49,7 +49,7 @@ const (
 	dialTCPTimeout      = time.Second * 5
 	dialUDPTimeout      = time.Second * 5
 	generalWriteTimeout = time.Second * 1
-	generalReadTimeout  = time.Second * 3
+	generalReadTimeout  = time.Second * 5
 	dohIOTimeout        = time.Second * 10
 )
 

@@ -31,7 +31,9 @@ import (
 )
 
 const (
-	serverTimeout = time.Second * 30
+	serverTCPReadTimeout  = time.Second * 8
+	serverTCPWriteTimeout = time.Second
+	serverUDPWriteTimeout = time.Second
 )
 
 // StartServer starts mos-chinadns. Will always return a non-nil err.
@@ -122,7 +124,7 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 			defer cancel()
 
 			for {
-				c.SetReadDeadline(time.Now().Add(serverTimeout))
+				c.SetReadDeadline(time.Now().Add(serverTCPReadTimeout))
 				q, _, _, err := readMsgFromTCP(c)
 				if err != nil {
 					return // read err, close the conn
@@ -139,14 +141,14 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 
 					r, err := d.ServeDNS(queryCtx, q)
 					if err != nil {
-						requestLogger.Warnf("query failed, %v", err)
+						requestLogger.Warnf("listenAndServeTCP %s: query failed: %v", l.Addr(), err)
 						return // ignore it, result is empty
 					}
 
-					c.SetWriteDeadline(time.Now().Add(serverTimeout))
+					c.SetWriteDeadline(time.Now().Add(serverTCPWriteTimeout))
 					_, err = writeMsgToTCP(c, r)
 					if err != nil {
-						requestLogger.Warnf("failed to send reply back, writeMsgToTCP: %v", err)
+						requestLogger.Warnf("listenAndServeTCP %s: failed to send reply back, writeMsgToTCP: %v", l.Addr(), err)
 					}
 				}()
 
@@ -191,11 +193,11 @@ func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
 			requestLogger := getRequestLogger(q)
 			defer releaseRequestLogger(requestLogger)
 
-			requestLogger.Debugf("listenAndServeTCP %s: new query from %s", l.LocalAddr(), from)
+			requestLogger.Debugf("listenAndServeUDP %s: new query from %s", l.LocalAddr(), from)
 
 			r, err := d.ServeDNS(queryCtx, q)
 			if err != nil {
-				requestLogger.Warnf("query failed, %v", err)
+				requestLogger.Warnf("listenAndServeUDP %s: query failed: %v", l.LocalAddr(), err)
 				return
 			}
 
@@ -204,14 +206,14 @@ func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
 
 			rRaw, err := r.PackBuffer(buf)
 			if err != nil {
-				requestLogger.Warnf("failed to send reply back, PackBuffer, %v", err)
+				requestLogger.Warnf("listenAndServeUDP %s: failed to send reply back, PackBuffer err: %v", l.LocalAddr(), err)
 				return
 			}
 
-			l.SetWriteDeadline(time.Now().Add(serverTimeout))
+			l.SetWriteDeadline(time.Now().Add(serverUDPWriteTimeout))
 			_, err = l.WriteTo(rRaw, from)
 			if err != nil {
-				requestLogger.Warnf("failed to send reply back, WriteTo: %v", err)
+				requestLogger.Warnf("listenAndServeUDP %s: failed to send reply back, WriteTo err: %v", l.LocalAddr(), err)
 			}
 		}()
 	}

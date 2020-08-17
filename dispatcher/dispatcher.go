@@ -39,7 +39,7 @@ const (
 	// MaxUDPSize max udp packet size
 	MaxUDPSize = 1480
 
-	queryTimeout = time.Second * 3
+	queryTimeout = time.Second * 5
 )
 
 // Dispatcher represents a dns query dispatcher
@@ -146,8 +146,8 @@ func (d *Dispatcher) tryAddToCache(r *dns.Msg, ttl time.Duration) {
 }
 
 var (
-	// ErrQueryFailed query failed because all upstreams are failed or not respond in time.
-	ErrQueryFailed = errors.New("query failed")
+	// ErrUpstreamsFailed all upstreams are failed or not respond in time.
+	ErrUpstreamsFailed = errors.New("all upstreams failed or not respond in time")
 )
 
 func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
@@ -213,7 +213,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 	case m := <-resChan:
 		return m, nil
 	case <-upstreamFailedNotificationChan:
-		return nil, ErrQueryFailed
+		return nil, ErrUpstreamsFailed
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
