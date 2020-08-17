@@ -18,6 +18,7 @@
 package dispatcher
 
 import (
+	"container/list"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -30,6 +31,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
@@ -522,16 +524,6 @@ readErr:
 	return u.exchange(ctx, q, true)
 }
 
-type connPool struct {
-	maxSize         int
-	ttl             time.Duration
-	cleanerInterval time.Duration
-
-	sync.Mutex
-	pool      []*dnsConn
-	lastClean time.Time
-}
-
 type dnsConn struct {
 	net.Conn
 	frameLeft          int
@@ -548,113 +540,161 @@ func newDNSConn(c net.Conn, lastRead time.Time) *dnsConn {
 	}
 }
 
+type connPool struct {
+	maxSize         int
+	ttl             time.Duration
+	cleanerInterval time.Duration
+
+	sync.Mutex
+	cleanerLocker int32
+	pool          *list.List
+}
+
+const (
+	cleanerOffline int32 = iota
+	cleanerOnline
+)
+
 func newConnPool(size int, ttl, gcInterval time.Duration) *connPool {
+	if size <= 0 || ttl <= 0 {
+		return nil
+	}
+
 	return &connPool{
 		maxSize:         size,
 		ttl:             ttl,
 		cleanerInterval: gcInterval,
-		pool:            make([]*dnsConn, 0),
+		pool:            list.New(),
+		cleanerLocker:   cleanerOffline,
 	}
-
 }
 
-// runCleaner must run under lock
-func (p *connPool) runCleaner(force bool) {
-	if p.disabled() || len(p.pool) == 0 {
-		return
+func (p *connPool) tryStartCleanerGoroutine() {
+	if atomic.CompareAndSwapInt32(&p.cleanerLocker, cleanerOffline, cleanerOnline) {
+		go func() {
+			p.startCleaner()
+			atomic.StoreInt32(&p.cleanerLocker, cleanerOffline)
+		}()
 	}
+}
 
-	//scheduled or forced
-	if force || time.Since(p.lastClean) > p.cleanerInterval {
-		p.lastClean = time.Now()
-		res := p.pool[:0]
-		for i := range p.pool {
-			// remove expired conns
-			if time.Since(p.pool[i].peerLastActiveTime) < p.ttl {
-				res = append(res, p.pool[i])
-			} else { // expired, release the resources
-				p.pool[i].Conn.Close()
-				p.pool[i] = nil
-			}
+func (p *connPool) startCleaner() {
+	ticker := time.NewTicker(p.cleanerInterval)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
+		_, connRemain := p.clean()
+		if connRemain == 0 { // no connection in pool, stop the cleaner
+			break
 		}
-		p.pool = res
+	}
+}
+
+func (p *connPool) clean() (connRemoved, connRemain int) {
+	p.Lock()
+	defer p.Unlock()
+
+	if p.pool.Len() == 0 { // nothing to clean up
+		return 0, 0
 	}
 
-	//when the pool is full
-	if len(p.pool) >= p.maxSize {
-		res := p.pool[:0]
-		mid := len(p.pool) >> 1
-		for i := range p.pool {
-			// remove half of the connections first
-			if i < mid {
-				p.pool[i].Conn.Close()
-				p.pool[i] = nil
-				continue
-			}
-
-			// then remove expired connections
-			if time.Since(p.pool[i].peerLastActiveTime) < p.ttl {
-				res = append(res, p.pool[i])
-			} else {
-				p.pool[i].Conn.Close()
-				p.pool[i] = nil
-			}
+	// remove expired connections
+	var next *list.Element // temporarily store e.Next(), which will not available after list.Remove().
+	for e := p.pool.Front(); e != nil; e = next {
+		dc := e.Value.(*dnsConn)
+		if time.Since(dc.peerLastActiveTime) > p.ttl { // expired, release the resources
+			connRemoved++
+			dc.Conn.Close()
+			next = e.Next()
+			p.pool.Remove(e)
 		}
-		p.pool = res
 	}
+
+	// when the pool is full
+	if p.pool.Len() >= p.maxSize {
+		mid := p.pool.Len() >> 1
+
+		i := 0
+		for e := p.pool.Front(); e != nil; e = next {
+			if i >= mid {
+				break
+			}
+			connRemoved++
+			i++
+			dc := e.Value.(*dnsConn)
+			dc.Conn.Close()
+			next = e.Next()
+			p.pool.Remove(e)
+		}
+	}
+
+	return connRemoved, p.pool.Len()
 }
 
 func (p *connPool) put(dc *dnsConn) {
+	if p == nil {
+		return
+	}
+
 	if dc == nil || dc.Conn == nil {
 		return
 	}
 
-	if p.disabled() || dc.frameLeft == unknownBrokenDataSize {
+	if dc.frameLeft == unknownBrokenDataSize { // this conn is broken, it should not be reused.
 		dc.Conn.Close()
 		return
 	}
 
+	p.tryStartCleanerGoroutine()
+
+	var poolIsFull bool
 	p.Lock()
-	defer p.Unlock()
-
-	p.runCleaner(false)
-
-	if len(p.pool) >= p.maxSize {
-		dc.Conn.Close() // pool is full, drop it
+	if p.pool.Len() >= p.maxSize {
+		poolIsFull = true
 	} else {
-		p.pool = append(p.pool, dc)
+		p.pool.PushBack(dc)
+	}
+	p.Unlock()
+
+	if poolIsFull {
+		dc.Conn.Close() // pool is full
 	}
 }
 
 func (p *connPool) get() (dc *dnsConn) {
-	if p.disabled() {
+	if p == nil {
 		return nil
+	}
+
+	p.Lock()
+	e := p.pool.Back()
+	if e != nil {
+		dc = e.Value.(*dnsConn)
+		p.pool.Remove(e)
+	}
+	p.Unlock()
+
+	if dc != nil {
+		if time.Since(dc.peerLastActiveTime) > p.ttl {
+			dc.Conn.Close() // expired
+			return nil
+		}
+
+		return dc
+	}
+
+	return nil // no available connection in pool
+}
+
+func (p *connPool) connRemain() int {
+	if p == nil {
+		return 0
 	}
 
 	p.Lock()
 	defer p.Unlock()
 
-	p.runCleaner(false)
-
-	if len(p.pool) > 0 {
-		dc := p.pool[len(p.pool)-1]
-		p.pool[len(p.pool)-1] = nil
-		p.pool = p.pool[:len(p.pool)-1]
-
-		if time.Since(dc.peerLastActiveTime) > p.ttl {
-			dc.Conn.Close() // expired
-			// the last elem is expired, means all elems are expired
-			// remove them asap
-			p.runCleaner(true)
-			return nil
-		}
-		return dc
-	}
-	return nil
-}
-
-func (p *connPool) disabled() bool {
-	return p == nil || p.maxSize <= 0 || p.ttl <= 0
+	return p.pool.Len()
 }
 
 type upstreamDoH struct {

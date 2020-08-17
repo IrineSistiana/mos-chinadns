@@ -30,6 +30,7 @@ import (
 	"math/big"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -189,45 +190,55 @@ func Test_getUpstreamDialContextFunc(t *testing.T) {
 func Test_connPool(t *testing.T) {
 	conn, _ := net.Pipe()
 
-	// nil
+	// nil pool should be ignored
 	var cp *connPool
 	cp.put(newDNSConn(conn, time.Now())) // do nothing
 	if c := cp.get(); c != nil {
 		t.Fatal("cp should be empty")
 	}
-	// zero size
-	cp = newConnPool(0, time.Second, time.Second)
-	cp.put(newDNSConn(conn, time.Now())) // do nothing
-	if len(cp.pool) != 0 {
-		t.Fatal("cp should be empty")
+	if n := cp.connRemain(); n != 0 {
+		t.Fatal("connRemain should == 0")
 	}
+
+	// zero size pool or 0 ttl should return a nil pool
+	if cp := newConnPool(0, time.Second, time.Second); cp != nil {
+		t.Fatal("init a zero size pool should return a nil pool")
+	}
+	if cp := newConnPool(8, 0, time.Second); cp != nil {
+		t.Fatal("init a 0 ttl pool should return a nil pool")
+	}
+
+	cp = newConnPool(8, time.Millisecond*500, time.Millisecond*250)
 	if c := cp.get(); c != nil {
 		t.Fatal("cp should be empty")
 	}
 
-	cp = newConnPool(8, time.Millisecond*250, time.Second*30) // dont run cleaner in schedule
 	for i := 0; i < 8; i++ {
 		cp.put(newDNSConn(conn, time.Now()))
 	}
-	if len(cp.pool) != 8 {
+	if cp.pool.Len() != 8 {
 		t.Fatal("cp should have 8 elems")
 	}
-	cp.put(newDNSConn(conn, time.Now())) // if cp is full, it will remove half of its elems and add this
-	if len(cp.pool) != 5 {
-		t.Fatalf("cp should have 5 elems, but got %d", len(cp.pool))
+	if atomic.LoadInt32(&cp.cleanerLocker) != cleanerOnline {
+		t.Fatal("cp cleaner should be online")
+	}
+	cp.put(newDNSConn(conn, time.Now())) // if cp is full, it will not add this conn.
+	if cp.pool.Len() != 8 {
+		t.Fatalf("cp should have 8 elems, but got %d", cp.pool.Len())
 	}
 	if c := cp.get(); c == nil {
-		t.Fatal("cp should return a old conn")
+		t.Fatal("cp should return a conn")
 	}
-	if len(cp.pool) != 4 {
-		t.Fatalf("cp should have 4 elems, but got %d", len(cp.pool))
+	if cp.pool.Len() != 7 {
+		t.Fatalf("cp should have 7 elems, but got %d", cp.pool.Len())
 	}
-	time.Sleep(time.Millisecond * 500) // all elems are expired now.
-	if c := cp.get(); c != nil {       // remove all expired elems
-		t.Fatal("cp should be emtpy")
+
+	time.Sleep(time.Millisecond * 1000) // all elems are expired now.
+	if cp.pool.Len() != 0 {             // all expired elems are removed
+		t.Fatalf("cp should have 0 elems, but got %d", cp.pool.Len())
 	}
-	if len(cp.pool) != 0 { // all expired elems are removed
-		t.Fatalf("cp should have 0 elems, but got %d", len(cp.pool))
+	if atomic.LoadInt32(&cp.cleanerLocker) != cleanerOffline { // if no elem in pool, cleaner should exit.
+		t.Fatal("cp cleaner should be offline")
 	}
 }
 
