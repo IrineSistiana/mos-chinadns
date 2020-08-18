@@ -26,11 +26,7 @@ import (
 // Config is config
 type Config struct {
 	Dispatcher struct {
-		Bind  []string `yaml:"bind"`
-		Cache struct {
-			Size int `yaml:"size"`
-		} `yaml:"cache"`
-		MinTTL uint32 `yaml:"min_ttl"`
+		Bind []string `yaml:"bind"`
 	} `yaml:"dispatcher"`
 
 	Upstream map[string]*BasicServerConfig `yaml:"upstream"`

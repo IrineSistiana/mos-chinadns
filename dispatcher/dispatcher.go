@@ -26,10 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/cache"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/notification"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
-
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 
 	"github.com/miekg/dns"
@@ -46,11 +43,6 @@ const (
 type Dispatcher struct {
 	config *Config
 
-	cache struct {
-		*cache.Cache
-	}
-	minTTL uint32
-
 	upstreams map[string]Upstream
 }
 
@@ -58,11 +50,6 @@ type Dispatcher struct {
 func InitDispatcher(conf *Config) (*Dispatcher, error) {
 	d := new(Dispatcher)
 	d.config = conf
-	d.minTTL = conf.Dispatcher.MinTTL
-
-	if conf.Dispatcher.Cache.Size > 0 {
-		d.cache.Cache = cache.New(conf.Dispatcher.Cache.Size)
-	}
 
 	var rootCAs *x509.CertPool
 	var err error
@@ -90,59 +77,8 @@ func InitDispatcher(conf *Config) (*Dispatcher, error) {
 }
 
 // ServeDNS sends q to upstreams and return first valid result.
-// Note: q will be unsafe to modify even after ServeDNS is returned.
-// (Some goroutine may still be running even after ServeDNS is returned)
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	requestLogger := getRequestLogger(q)
-	defer releaseRequestLogger(requestLogger)
-
-	if d.cache.Cache != nil {
-		if r = d.tryGetFromCache(q); r != nil {
-			requestLogger.Debug("cache hit")
-			return r, nil
-		}
-	}
-
-	r, err = d.dispatch(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-
-	// modify reply ttl
-	ttl := utils.GetAnswerMinTTL(r)
-	if ttl < d.minTTL {
-		ttl = d.minTTL
-	}
-	utils.SetAnswerTTL(r, ttl)
-
-	if d.cache.Cache != nil {
-		d.tryAddToCache(r, time.Duration(ttl)*time.Second)
-	}
-	return r, nil
-}
-
-func (d *Dispatcher) tryGetFromCache(q *dns.Msg) (r *dns.Msg) {
-	// don't use cache for those msg
-	if len(q.Question) == 1 || checkMsgHasECS(q) == true {
-		return nil
-	}
-
-	if r := d.cache.Get(q.Question[0]); r != nil { // cache hit
-		r.Id = q.Id
-		return r
-	}
-
-	// cache miss
-	return nil
-}
-
-// tryAddToCache adds r to cache
-func (d *Dispatcher) tryAddToCache(r *dns.Msg, ttl time.Duration) {
-	// only cache those msg
-	if len(r.Question) == 1 && r.Rcode == dns.RcodeSuccess {
-		expireAt := time.Now().Add(ttl)
-		d.cache.Add(r.Question[0], r, expireAt)
-	}
+	return d.dispatch(ctx, q)
 }
 
 var (
