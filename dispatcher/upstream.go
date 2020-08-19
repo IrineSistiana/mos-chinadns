@@ -61,7 +61,6 @@ type Upstream interface {
 
 // upstream represents mos-chinadns upstream.
 type upstream struct {
-	bk    *bucket
 	edns0 struct {
 		clientSubnet *dns.EDNS0_SUBNET
 		overwriteECS bool
@@ -76,10 +75,15 @@ type upstream struct {
 		checkCNAME           bool
 	}
 
-	deduplicate       bool
-	singleFlightGroup singleflight.Group
+	deduplicate bool
 
-	u Upstream
+	// this option is not in config
+	// will be enabled when using encrypt protocol
+	removeEDNS0Padding bool
+
+	bk                *bucket
+	singleFlightGroup singleflight.Group
+	basicUpstream     Upstream
 }
 
 func isUnhandlableType(q *dns.Msg) bool {
@@ -140,7 +144,7 @@ func (u *upstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 		if u.policies.denyUnhandlableTypes {
 			return nil, nil
 		} else {
-			return u.u.Exchange(ctx, q)
+			return u.basicUpstream.Exchange(ctx, q)
 		}
 	}
 
@@ -162,9 +166,14 @@ func (u *upstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 	}
 
 	// send to upstream
-	r, err = u.u.Exchange(ctx, q)
+	r, err = u.basicUpstream.Exchange(ctx, q)
 	if err != nil {
 		return nil, err
+	}
+
+	// remove padding
+	if u.removeEDNS0Padding {
+		removeEDNS0Padding(r)
 	}
 
 	// this reply should be accepted right away, skip other checks.
@@ -270,6 +279,14 @@ func checkMsgHasValidIP(m *dns.Msg) bool {
 	return false
 }
 
+func removeEDNS0Padding(m *dns.Msg) {
+	if opt := m.IsEdns0(); opt != nil {
+		if len(opt.Option) > 0 && opt.Option[len(opt.Option)-1].Option() == dns.EDNS0PADDING {
+			opt.Option = opt.Option[:len(opt.Option)-1]
+		}
+	}
+}
+
 // NewUpstream inits a upstream instance base on the config.
 // rootCAs will be used in dot/doh upstream in tls server verification.
 func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error) {
@@ -277,14 +294,51 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 		return nil, errors.New("no server config")
 	}
 
-	var basicUpstream Upstream
+	u := new(upstream)
+
+	// set MaxConcurrentQueries
+	if sc.MaxConcurrentQueries > 0 {
+		u.bk = newBucket(sc.MaxConcurrentQueries)
+	}
+
+	// load edns0
+	if len(sc.EDNS0.ClientSubnet) != 0 {
+		subnet, err := newEDNS0SubnetFromStr(sc.EDNS0.ClientSubnet)
+		if err != nil {
+			return nil, fmt.Errorf("invaild ecs, %w", err)
+		}
+		u.edns0.clientSubnet = subnet
+	}
+	u.edns0.overwriteECS = sc.EDNS0.OverwriteECS
+
+	// load policies
+	if len(sc.Policies.IP) != 0 {
+		p, err := newIPPolicies(sc.Policies.IP)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load ip policies, %w", err)
+		}
+		u.policies.ip = p
+	}
+	if len(sc.Policies.Domain) != 0 {
+		p, err := newDomainPolicies(sc.Policies.Domain)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load domain policies, %w", err)
+		}
+		u.policies.domain = p
+	}
+	u.policies.checkCNAME = sc.Policies.CheckCNAME
+	u.policies.denyUnhandlableTypes = sc.Policies.DenyUnhandlableTypes
+	u.policies.denyErrorRcode = sc.Policies.DenyErrorRcode
+	u.policies.denyEmptyIPReply = sc.Policies.DenyEmptyIPReply
+
+	u.deduplicate = sc.Deduplicate
 
 	switch sc.Protocol {
 	case "udp", "":
 		dialUDP := func() (net.Conn, error) {
 			return net.DialTimeout("udp", sc.Addr, dialUDPTimeout)
 		}
-		basicUpstream = &upstreamCommon{
+		u.basicUpstream = &upstreamCommon{
 			dialNewConn: dialUDP,
 			readMsg:     readMsgFromUDP,
 			writeMsg:    writeMsgToUDP,
@@ -297,7 +351,7 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 		}
 
 		idleTimeout := time.Duration(sc.TCP.IdleTimeout) * time.Second
-		basicUpstream = &upstreamCommon{
+		u.basicUpstream = &upstreamCommon{
 			dialNewConn: dialTCP,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
@@ -336,12 +390,13 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 			return tlsConn, nil
 		}
 		idleTimeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
-		basicUpstream = &upstreamCommon{
+		u.basicUpstream = &upstreamCommon{
 			dialNewConn: dialTLS,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
 			cp:          newConnPool(0xffff, idleTimeout, idleTimeout>>1),
 		}
+		u.removeEDNS0Padding = false
 	case "doh":
 		if len(sc.DoH.URL) == 0 {
 			return nil, fmt.Errorf("protocol [%s] needs additional argument: url", sc.Protocol)
@@ -361,52 +416,14 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 			return nil, fmt.Errorf("failed to init dialContext: %v", err)
 		}
 
-		basicUpstream, err = newDoHUpstream(sc.DoH.URL, dialContext, tlsConf)
+		u.basicUpstream, err = newDoHUpstream(sc.DoH.URL, dialContext, tlsConf)
 		if err != nil {
 			return nil, fmt.Errorf("failed to init DoH: %v", err)
 		}
+		u.removeEDNS0Padding = true
 	default:
 		return nil, fmt.Errorf("unsupport protocol: %s", sc.Protocol)
 	}
-
-	u := &upstream{u: basicUpstream}
-
-	// set MaxConcurrentQueries
-	if sc.MaxConcurrentQueries > 0 {
-		u.bk = newBucket(sc.MaxConcurrentQueries)
-	}
-
-	// load edns0
-	if len(sc.EDNS0.ClientSubnet) != 0 {
-		subnet, err := newEDNS0SubnetFromStr(sc.EDNS0.ClientSubnet)
-		if err != nil {
-			return nil, fmt.Errorf("invaild ecs, %w", err)
-		}
-		u.edns0.clientSubnet = subnet
-	}
-	u.edns0.overwriteECS = sc.EDNS0.OverwriteECS
-
-	// load policies
-	if len(sc.Policies.IP) != 0 {
-		p, err := newIPPolicies(sc.Policies.IP)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load ip policies, %w", err)
-		}
-		u.policies.ip = p
-	}
-	if len(sc.Policies.Domain) != 0 {
-		p, err := newDomainPolicies(sc.Policies.Domain)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load domain policies, %w", err)
-		}
-		u.policies.domain = p
-	}
-	u.policies.checkCNAME = sc.Policies.CheckCNAME
-	u.policies.denyUnhandlableTypes = sc.Policies.DenyUnhandlableTypes
-	u.policies.denyErrorRcode = sc.Policies.DenyErrorRcode
-	u.policies.denyEmptyIPReply = sc.Policies.DenyEmptyIPReply
-
-	u.deduplicate = sc.Deduplicate
 
 	return u, nil
 }
