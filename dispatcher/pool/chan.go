@@ -18,31 +18,9 @@
 package pool
 
 import (
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/notification"
 	"github.com/miekg/dns"
 	"sync"
 )
-
-var notificationChanPool = sync.Pool{
-	New: func() interface{} {
-		return make(chan notification.Signal, 1)
-	},
-}
-
-func GetNotificationChan() chan notification.Signal {
-	return notificationChanPool.Get().(chan notification.Signal)
-}
-
-func ReleaseNotificationChan(c chan notification.Signal) {
-	for {
-		select {
-		case <-c:
-		default:
-			notificationChanPool.Put(c)
-			return
-		}
-	}
-}
 
 var resChanPool = sync.Pool{
 	New: func() interface{} {

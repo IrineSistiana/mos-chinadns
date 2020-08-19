@@ -18,6 +18,7 @@
 package dispatcher
 
 import (
+	"bytes"
 	"container/list"
 	"context"
 	"crypto/tls"
@@ -779,8 +780,8 @@ func (u *upstreamDoH) Exchange(_ context.Context, q *dns.Msg) (r *dns.Msg, err e
 	// Padding characters for base64url MUST NOT be included.
 	// See: https://tools.ietf.org/html/rfc8484 6
 	// That's why we use base64.RawURLEncoding
-	urlBuilder := pool.AcquireStringBuilder()
-	defer pool.ReleaseStringBuilder(urlBuilder)
+	urlBuilder := acquireDoHURLBuilder()
+	defer releaseDoHURLBuilder(urlBuilder)
 	urlBuilder.Write(u.preparedURL)
 	encoder := base64.NewEncoder(base64.RawURLEncoding, urlBuilder)
 	encoder.Write(rRaw)
@@ -836,8 +837,8 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) 
 			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
 		}
 	} else { // resp.ContentLength = -1, unknown length
-		bb := pool.AcquireBytesBuf()
-		defer pool.ReleaseBytesBuf(bb)
+		bb := acquireDoHReadBuf()
+		defer releaseDoHReadBuf(bb)
 		n, err := bb.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize+1))
 		if n > dns.MaxMsgSize {
 			return nil, fmt.Errorf("response body is too large, first 1kb data: %s", string(bb.Bytes()[:1024]))
@@ -856,6 +857,40 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) 
 		return nil, fmt.Errorf("invalid reply: %v", err)
 	}
 	return r, nil
+}
+
+var (
+	dohReadBytesBufPool = sync.Pool{
+		New: func() interface{} {
+			return new(bytes.Buffer)
+		},
+	}
+)
+
+func acquireDoHReadBuf() *bytes.Buffer {
+	return dohReadBytesBufPool.Get().(*bytes.Buffer)
+}
+
+func releaseDoHReadBuf(buf *bytes.Buffer) {
+	buf.Reset()
+	dohReadBytesBufPool.Put(buf)
+}
+
+var (
+	dohURLStringBuilderPool = sync.Pool{
+		New: func() interface{} {
+			return new(strings.Builder)
+		},
+	}
+)
+
+func acquireDoHURLBuilder() *strings.Builder {
+	return dohURLStringBuilderPool.Get().(*strings.Builder)
+}
+
+func releaseDoHURLBuilder(builder *strings.Builder) {
+	builder.Reset()
+	dohURLStringBuilderPool.Put(builder)
 }
 
 func getUpstreamDialContextFunc(network, dstAddress, sock5Address string) (func(ctx context.Context, _, _ string) (net.Conn, error), error) {

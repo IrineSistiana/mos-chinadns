@@ -92,14 +92,28 @@ func writeRawMsgToTCP(c io.Writer, b []byte) (n int, err error) {
 		return 0, errMsgTooBig
 	}
 
-	wb := pool.GetTCPWriteBuf(len(b) + 2)
+	wb := pool.GetTCPWriteBuf()
 	defer pool.ReleaseTCPWriteBuf(wb)
 
 	wb[0] = byte(len(b) >> 8)
 	wb[1] = byte(len(b))
-	copy(wb[2:], b)
+	nc := copy(wb[2:], b)
+	nw, err := c.Write(wb[:2+nc])
+	n = n + nw
+	if err != nil {
+		return
+	}
 
-	return c.Write(wb)
+	for n < len(b) {
+		nc := copy(wb, b)
+		nw, err = c.Write(wb[:nc])
+		n = n + nw
+		if err != nil {
+			return
+		}
+	}
+
+	return
 }
 
 func readMsgFromUDP(c io.Reader) (m *dns.Msg, _ int, n int, err error) {

@@ -26,7 +26,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/notification"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 
 	"github.com/miekg/dns"
@@ -123,7 +122,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 			}
 		}()
 	}
-	upstreamFailedNotificationChan := pool.GetNotificationChan()
+	upstreamFailedNotificationChan := make(chan struct{}, 0)
 
 	// this go routine notifies the dispatch if all upstreams are failed
 	// and release some resources.
@@ -133,7 +132,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 		// avoid below select{} choose upstreamFailedNotificationChan
 		// if both resChan and upstreamFailedNotificationChan are selectable
 		if len(resChan) == 0 {
-			notification.NoBlockNotify(upstreamFailedNotificationChan, notification.Failed)
+			close(upstreamFailedNotificationChan)
 		}
 
 		// dispatch is returned
@@ -142,7 +141,6 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 		// time to finial cleanup
 		releaseRequestLogger(requestLogger)
 		pool.ReleaseResChan(resChan)
-		pool.ReleaseNotificationChan(upstreamFailedNotificationChan)
 	}()
 
 	select {

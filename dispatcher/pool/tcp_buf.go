@@ -18,8 +18,6 @@
 package pool
 
 import (
-	"fmt"
-	"github.com/miekg/dns"
 	"sync"
 )
 
@@ -30,17 +28,9 @@ var (
 		},
 	}
 
-	// for msg that small or equal than 2kb
-	tcpWriteSmallBufPool = sync.Pool{
+	tcpWriteBufPool = sync.Pool{
 		New: func() interface{} {
 			return make([]byte, 2048)
-		},
-	}
-
-	// for msg that bigger than 2kb, return a 64kb + 2byte buf
-	tcpWriteLargeBufPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, dns.MaxMsgSize+2)
 		},
 	}
 )
@@ -53,26 +43,14 @@ func ReleaseTCPHeaderBuf(buf []byte) {
 	tcpHeaderBufPool.Put(buf)
 }
 
-func GetTCPWriteBuf(l int) []byte {
-	if l > dns.MaxMsgSize+2 || l <= 0 {
-		panic(fmt.Sprintf("pool GetTCPWriteBuf: invalid buf size %d", l))
-	}
-
-	if l <= 2048 {
-		return tcpWriteSmallBufPool.Get().([]byte)[:l]
-	}
-	return tcpWriteLargeBufPool.Get().([]byte)[:l]
+// GetTCPWriteBuf returns a 2048-byte slice buf
+func GetTCPWriteBuf() []byte {
+	return tcpWriteBufPool.Get().([]byte)
 }
 
 func ReleaseTCPWriteBuf(buf []byte) {
-	c := cap(buf)
-	buf = buf[:c]
-	switch c {
-	case 2048:
-		tcpWriteSmallBufPool.Put(buf)
-	case dns.MaxMsgSize + 2:
-		tcpWriteLargeBufPool.Put(buf)
-	default:
-		panic(fmt.Sprintf("pool ReleaseTCPWriteBuf: invalid buf size %d", c))
+	if len(buf) != 2048 {
+		panic("invalid buf size")
 	}
+	tcpWriteBufPool.Put(buf)
 }
