@@ -98,21 +98,17 @@ func writeRawMsgToTCP(c io.Writer, b []byte) (n int, err error) {
 	wb[0] = byte(len(b) >> 8)
 	wb[1] = byte(len(b))
 	nc := copy(wb[2:], b)
-	nw, err := c.Write(wb[:2+nc])
+	nw, err := c.Write(wb[:2+nc]) // write first chunk
 	n = n + nw
 	if err != nil {
 		return
 	}
 
-	for n < len(b) {
-		nc := copy(wb, b)
-		nw, err = c.Write(wb[:nc])
+	if len(b) > nw { // write remaining data
+		nw, err := c.Write(b[nw:])
 		n = n + nw
-		if err != nil {
-			return
-		}
+		return n, err
 	}
-
 	return
 }
 
