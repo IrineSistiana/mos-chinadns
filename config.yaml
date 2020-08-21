@@ -74,11 +74,11 @@ upstream:
             # e.g. "deny:./blacklist.txt" `blacklist.txt`里的域名不会发送至该上游。
             # e.g. "accept:./whitelist.txt|deny_all" 只有`whitelist.txt`里的域名才会发送至该上游。
             #
-            # 默认为空，所有域名都会发送至local服务器。
+            # 默认为: "accept:./chn_domain.list"。
             #
             # Tips: 隐私保护模式: "accept:./chn_domain.list|deny_all"
             # 这限制了只有`chn_domain.list`里的域名能发送至local服务器:
-            domain: ""
+            domain: "accept:./chn_domain.list"
 
             # 是否拒绝返回了出错的Rcode(Rcode!=0)的应答
             # false: 返回了非零Rcode的应答会被直接采纳。
