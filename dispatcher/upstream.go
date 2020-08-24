@@ -117,6 +117,10 @@ func (u *upstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 			return nil, errInternalTypeMismatch
 		}
 
+		if rUnsafe == nil {
+			return nil, nil
+		}
+
 		if shared { // shared reply may has different id and is not safe to modify.
 			r = rUnsafe.Copy()
 			r.Id = q.Id
