@@ -77,10 +77,6 @@ type upstream struct {
 
 	deduplicate bool
 
-	// this option is not in config
-	// will be enabled when using encrypt protocol
-	removeEDNS0Padding bool
-
 	bk                *bucket
 	singleFlightGroup singleflight.Group
 	basicUpstream     Upstream
@@ -173,11 +169,6 @@ func (u *upstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 	r, err = u.basicUpstream.Exchange(ctx, q)
 	if err != nil {
 		return nil, err
-	}
-
-	// remove padding
-	if u.removeEDNS0Padding {
-		removeEDNS0Padding(r)
 	}
 
 	// this reply should be accepted right away, skip other checks.
@@ -281,14 +272,6 @@ func checkMsgHasValidIP(m *dns.Msg) bool {
 		}
 	}
 	return false
-}
-
-func removeEDNS0Padding(m *dns.Msg) {
-	if opt := m.IsEdns0(); opt != nil {
-		if len(opt.Option) > 0 && opt.Option[len(opt.Option)-1].Option() == dns.EDNS0PADDING {
-			opt.Option = opt.Option[:len(opt.Option)-1]
-		}
-	}
 }
 
 // NewUpstream inits a upstream instance base on the config.
@@ -400,7 +383,6 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 			writeMsg:    writeMsgToTCP,
 			cp:          newConnPool(0xffff, idleTimeout, idleTimeout>>1),
 		}
-		u.removeEDNS0Padding = false
 	case "doh":
 		if len(sc.DoH.URL) == 0 {
 			return nil, fmt.Errorf("protocol [%s] needs additional argument: url", sc.Protocol)
@@ -424,7 +406,6 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 		if err != nil {
 			return nil, fmt.Errorf("failed to init DoH: %v", err)
 		}
-		u.removeEDNS0Padding = true
 	default:
 		return nil, fmt.Errorf("unsupport protocol: %s", sc.Protocol)
 	}
