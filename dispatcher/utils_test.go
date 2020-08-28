@@ -38,29 +38,25 @@ func Test_readMsgFromTCP(t *testing.T) {
 		c io.Reader
 	}
 	tests := []struct {
-		name               string
-		args               args
-		wantM              *dns.Msg
-		wantBrokenDataLeft int
-		wantN              int
-		wantErr            bool
+		name    string
+		args    args
+		wantM   *dns.Msg
+		wantN   int
+		wantErr bool
 	}{
-		{"normal read", args{bb}, q, 0, len(data) + 2, false},
-		{"short read", args{bytes.NewBuffer(bb.Bytes()[:2+13])}, nil, len(data) - 13, 2 + 13, true},
-		{"broken length header", args{bytes.NewBuffer(bb.Bytes()[:1])}, nil, unknownBrokenDataSize, 1, true},
+		{"normal read", args{bb}, q, len(data) + 2, false},
+		{"short read", args{bytes.NewBuffer(bb.Bytes()[:2+13])}, nil, 2 + 13, true},
+		{"broken length header", args{bytes.NewBuffer(bb.Bytes()[:1])}, nil, 1, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotM, gotBrokenDataLeft, gotN, err := readMsgFromTCP(tt.args.c)
+			gotM, gotN, err := readMsgFromTCP(tt.args.c)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("readMsgFromTCP() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(gotM, tt.wantM) {
 				t.Errorf("readMsgFromTCP() gotM = %v, want %v", gotM, tt.wantM)
-			}
-			if gotBrokenDataLeft != tt.wantBrokenDataLeft {
-				t.Errorf("readMsgFromTCP() gotBrokenDataLeft = %v, want %v", gotBrokenDataLeft, tt.wantBrokenDataLeft)
 			}
 			if gotN != tt.wantN {
 				t.Errorf("readMsgFromTCP() gotN = %v, want %v", gotN, tt.wantN)

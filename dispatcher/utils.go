@@ -25,31 +25,24 @@ import (
 	"io"
 )
 
-const (
-	unknownBrokenDataSize = -1
-)
-
 // readMsgFromTCP reads msg from a tcp connection.
 // brokenDataLeft indicates the frame size which have not be read from c.
 // if brokenDataLeft is unknownBrokenDataSize(-1), c should not be reused anymore.
 // n represents how many bytes are read from c.
-func readMsgFromTCP(c io.Reader) (m *dns.Msg, brokenDataLeft int, n int, err error) {
+func readMsgFromTCP(c io.Reader) (m *dns.Msg, n int, err error) {
 	lengthRaw := pool.GetTCPHeaderBuf()
 	defer pool.ReleaseTCPHeaderBuf(lengthRaw)
 
 	n1, err := io.ReadFull(c, lengthRaw)
 	n = n + n1
 	if err != nil {
-		if n1 != 0 {
-			return nil, unknownBrokenDataSize, n, err
-		}
-		return nil, 0, n, err
+		return nil, n, err
 	}
 
 	// dns length
 	length := binary.BigEndian.Uint16(lengthRaw)
 	if length < 12 {
-		return nil, unknownBrokenDataSize, n, dns.ErrShortRead
+		return nil, n, dns.ErrShortRead
 	}
 
 	buf := pool.GetMsgBuf(int(length))
@@ -58,15 +51,15 @@ func readMsgFromTCP(c io.Reader) (m *dns.Msg, brokenDataLeft int, n int, err err
 	n2, err := io.ReadFull(c, buf)
 	n = n + n2
 	if err != nil {
-		return nil, int(length) - n2, n, err
+		return nil, n, err
 	}
 
 	m = new(dns.Msg)
 	err = m.Unpack(buf)
 	if err != nil {
-		return nil, int(length) - n2, n, err
+		return nil, n, err
 	}
-	return m, 0, n, nil
+	return m, n, nil
 }
 
 var errMsgTooBig = errors.New("payload is bigger than dns.MaxMsgSize")
@@ -112,9 +105,8 @@ func writeRawMsgToTCP(c io.Writer, b []byte) (n int, err error) {
 	return
 }
 
-func readMsgFromUDP(c io.Reader) (m *dns.Msg, _ int, n int, err error) {
-	m, n, err = readMsgFromUDPWithLimit(c, MaxUDPSize)
-	return m, 0, n, err
+func readMsgFromUDP(c io.Reader) (m *dns.Msg, n int, err error) {
+	return readMsgFromUDPWithLimit(c, MaxUDPSize)
 }
 
 func readMsgFromUDPWithLimit(c io.Reader, maxSize int) (m *dns.Msg, n int, err error) {

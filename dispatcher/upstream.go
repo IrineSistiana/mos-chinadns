@@ -52,6 +52,8 @@ const (
 	generalWriteTimeout = time.Second * 1
 	generalReadTimeout  = time.Second * 5
 	dohIOTimeout        = time.Second * 10
+
+	connPoolCleanerInterval = time.Second * 2
 )
 
 // Upstream represents a dns upstream
@@ -88,7 +90,6 @@ func isUnhandlableType(q *dns.Msg) bool {
 
 var (
 	errTooManyConcurrentQueries = errors.New("too many concurrent queries")
-	errInternalTypeMismatch     = errors.New("internal err: interface type mismatched")
 )
 
 func (u *upstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
@@ -108,10 +109,7 @@ func (u *upstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err er
 			return nil, err
 		}
 
-		rUnsafe, ok := v.(*dns.Msg)
-		if !ok {
-			return nil, errInternalTypeMismatch
-		}
+		rUnsafe := v.(*dns.Msg)
 
 		if rUnsafe == nil {
 			return nil, nil
@@ -329,7 +327,7 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 			dialNewConn: dialUDP,
 			readMsg:     readMsgFromUDP,
 			writeMsg:    writeMsgToUDP,
-			cp:          newConnPool(0xffff, time.Second*10, time.Second*5),
+			cp:          newConnPool(0xffff, time.Second*10, connPoolCleanerInterval),
 		}
 	case "tcp":
 		dialTCP, err := getUpstreamDialTCPFunc("tcp", sc.Addr, sc.Socks5, dialTCPTimeout)
@@ -337,13 +335,18 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 			return nil, fmt.Errorf("failed to init dialer: %v", err)
 		}
 
-		idleTimeout := time.Duration(sc.TCP.IdleTimeout) * time.Second
-		u.basicUpstream = &upstreamCommon{
+		uc := &upstreamCommon{
 			dialNewConn: dialTCP,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
-			cp:          newConnPool(0xffff, idleTimeout, idleTimeout>>1),
 		}
+
+		if sc.TCP.IdleTimeout > 0 {
+			idleTimeout := time.Duration(sc.TCP.IdleTimeout) * time.Second
+			uc.cp = newConnPool(0xffff, idleTimeout, connPoolCleanerInterval)
+		}
+
+		u.basicUpstream = uc
 	case "dot":
 		if len(sc.DoT.ServerName) == 0 {
 			return nil, fmt.Errorf("protocol [%s] needs additional argument: server_name", sc.Protocol)
@@ -376,13 +379,18 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 			}
 			return tlsConn, nil
 		}
-		idleTimeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
-		u.basicUpstream = &upstreamCommon{
+		uc := &upstreamCommon{
 			dialNewConn: dialTLS,
 			readMsg:     readMsgFromTCP,
 			writeMsg:    writeMsgToTCP,
-			cp:          newConnPool(0xffff, idleTimeout, idleTimeout>>1),
 		}
+
+		if sc.DoT.IdleTimeout > 0 {
+			idleTimeout := time.Duration(sc.DoT.IdleTimeout) * time.Second
+			uc.cp = newConnPool(0xffff, idleTimeout, connPoolCleanerInterval)
+		}
+
+		u.basicUpstream = uc
 	case "doh":
 		if len(sc.DoH.URL) == 0 {
 			return nil, fmt.Errorf("protocol [%s] needs additional argument: url", sc.Protocol)
@@ -417,140 +425,83 @@ func NewUpstream(sc *BasicServerConfig, rootCAs *x509.CertPool) (Upstream, error
 type upstreamCommon struct {
 	dialNewConn func() (net.Conn, error)
 	writeMsg    func(c io.Writer, m *dns.Msg) (int, error)
-	readMsg     func(c io.Reader) (m *dns.Msg, brokenDataLeft int, n int, err error)
+	readMsg     func(c io.Reader) (m *dns.Msg, n int, err error)
 
 	cp *connPool
 }
 
 func (u *upstreamCommon) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	return u.exchange(ctx, q, false)
+	return u.exchange(ctx, q)
 }
 
-func (u *upstreamCommon) exchange(ctx context.Context, q *dns.Msg, forceNewConn bool) (r *dns.Msg, err error) {
-	if err = ctx.Err(); err != nil {
-		return nil, err
+func (u *upstreamCommon) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
+	if contextIsDone(ctx) == true {
+		return nil, ctx.Err()
 	}
 
-	var isNewConn bool
-	var dc *dnsConn
-	if !forceNewConn { // we want a new connection
-		dc = u.cp.get()
-	}
-
-	// if we need a new conn
-	if dc == nil {
-		c, err := u.dialNewConn()
+	if c := u.getConnFromPool(); c != nil {
+		r, err := u.exchangeViaConn(q, c)
 		if err != nil {
-			return nil, fmt.Errorf("failed to dial new conntion: %v", err)
+			c.Close()
+			if contextIsDone(ctx) == true {
+				return nil, fmt.Errorf("reused connection err: %v, can't retry: %v", err, ctx.Err())
+			} else {
+				goto exchangeViaNewConn // we might have time to retry this query on a new connection
+			}
 		}
-		dc = newDNSConn(c, time.Now())
-		isNewConn = true
-		// dialNewConn might take some time, check if ctx is done
-		if err = ctx.Err(); err != nil {
-			u.cp.put(dc)
-			return nil, err
-		}
-	} else {
-		dc.msgIDCounter++
+		u.putConnToPool(c)
+		return r, nil
 	}
 
-	qWithNewID := pool.GetMsg()
-	defer pool.ReleaseMsg(qWithNewID)
-	*qWithNewID = *q // shadow copy, we just want to change its ID
-	qWithNewID.Id = dc.msgIDCounter
-
-	// write first
-	dc.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
-	_, err = u.writeMsg(dc.Conn, qWithNewID)
-	if err != nil { // write err typically is fatal err
-		dc.Close()
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, err
-		}
-		// ctx is not done yet, open a new conn and try again.
-		return u.exchange(ctx, q, true)
-	}
-
-	var n int
-	dc.SetReadDeadline(time.Now().Add(generalReadTimeout))
-	// if we need to empty the conn (some data of previous reply)
-	if dc.frameLeft > 0 {
-		buf := pool.GetMsgBuf(dc.frameLeft)
-		n, err = io.ReadFull(dc, buf)
-		pool.ReleaseMsgBuf(buf)
-		if n > 0 {
-			dc.peerLastActiveTime = time.Now()
-			dc.frameLeft = dc.frameLeft - n
-		}
-		if err != nil {
-			goto readErr
-		}
-	}
-
-read:
-	r, dc.frameLeft, n, err = u.readMsg(dc.Conn)
-	if n > 0 {
-		dc.peerLastActiveTime = time.Now()
-	}
+exchangeViaNewConn:
+	c, err := u.dialNewConn()
 	if err != nil {
-		goto readErr
+		return nil, fmt.Errorf("failed to dial new conntion: %v", err)
 	}
 
-	if r.Id != dc.msgIDCounter {
-		if !isNewConn {
-			// this connection is reused, data might be the reply
-			// of a previous qRaw, not this qRaw.
-			// try to read again
-			goto read
-		} else {
-			// new connection should not receive a mismatched id, this is an error
-			dc.Close()
-			err = dns.ErrId
-			goto readErr
-		}
+	// dialNewConn might take some time, check if ctx is done
+	if contextIsDone(ctx) == true {
+		u.putConnToPool(c)
+		return nil, ctx.Err()
 	}
 
-	u.cp.put(dc)
-	r.Id = q.Id // change the ID back
+	r, err = u.exchangeViaConn(q, c)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+
+	u.putConnToPool(c)
 	return r, nil
-
-readErr:
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		if dc.frameLeft == unknownBrokenDataSize {
-			dc.Close()
-			return nil, fmt.Errorf("conn is broken, %v", err)
-		}
-		u.cp.put(dc)
-		return nil, err
-	}
-
-	if isNewConn { // new connection shouldn't have any other type of err
-		dc.Close()
-		return nil, fmt.Errorf("new conn io err, %v", err)
-	}
-
-	// reused connection got an unexpected err
-	dc.Close()
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, err
-	}
-	// ctx is not done yet, open a new conn and try again.
-	return u.exchange(ctx, q, true)
 }
 
-type dnsConn struct {
-	net.Conn
-	frameLeft          int
-	msgIDCounter       uint16
-	peerLastActiveTime time.Time
+func (u *upstreamCommon) exchangeViaConn(q *dns.Msg, c net.Conn) (r *dns.Msg, err error) {
+	// write first
+	c.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
+	_, err = u.writeMsg(c, q)
+	if err != nil { // write err typically is a fatal err
+		c.Close()
+		return nil, fmt.Errorf("failed to write msg: %v", err)
+	}
+
+	c.SetReadDeadline(time.Now().Add(generalReadTimeout))
+	r, _, err = u.readMsg(c)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read msg: %v", err)
+	}
+	return r, nil
 }
 
-func newDNSConn(c net.Conn, lastRead time.Time) *dnsConn {
-	return &dnsConn{
-		Conn:               c,
-		frameLeft:          0,
-		msgIDCounter:       dns.Id(),
-		peerLastActiveTime: lastRead,
+func (u *upstreamCommon) getConnFromPool() net.Conn {
+	if u.cp != nil {
+		return u.cp.get()
+	}
+	return nil
+}
+
+func (u *upstreamCommon) putConnToPool(c net.Conn) {
+	if u.cp != nil {
+		u.cp.put(c)
 	}
 }
 
@@ -559,9 +510,14 @@ type connPool struct {
 	ttl             time.Duration
 	cleanerInterval time.Duration
 
+	cleanerStatus int32
 	sync.Mutex
-	cleanerLocker int32
-	pool          *list.List
+	pool *list.List
+}
+
+type poolElem struct {
+	c           net.Conn
+	expiredTime time.Time
 }
 
 const (
@@ -569,25 +525,25 @@ const (
 	cleanerOnline
 )
 
-func newConnPool(size int, ttl, gcInterval time.Duration) *connPool {
-	if size <= 0 || ttl <= 0 {
-		return nil
+func newConnPool(size int, ttl, cleanerInterval time.Duration) *connPool {
+	if size <= 0 || ttl <= 0 || cleanerInterval <= 0 {
+		panic("invalid arguments in newConnPool")
 	}
 
 	return &connPool{
 		maxSize:         size,
 		ttl:             ttl,
-		cleanerInterval: gcInterval,
+		cleanerInterval: cleanerInterval,
 		pool:            list.New(),
-		cleanerLocker:   cleanerOffline,
+		cleanerStatus:   cleanerOffline,
 	}
 }
 
 func (p *connPool) tryStartCleanerGoroutine() {
-	if atomic.CompareAndSwapInt32(&p.cleanerLocker, cleanerOffline, cleanerOnline) {
+	if atomic.CompareAndSwapInt32(&p.cleanerStatus, cleanerOffline, cleanerOnline) {
 		go func() {
 			p.startCleaner()
-			atomic.StoreInt32(&p.cleanerLocker, cleanerOffline)
+			atomic.StoreInt32(&p.cleanerStatus, cleanerOffline)
 		}()
 	}
 }
@@ -597,47 +553,26 @@ func (p *connPool) startCleaner() {
 	defer ticker.Stop()
 	for {
 		<-ticker.C
+		p.Lock()
 		_, connRemain := p.clean()
 		if connRemain == 0 { // no connection in pool, stop the cleaner
-			break
+			p.Unlock()
+			return
 		}
+		p.Unlock()
 	}
 }
 
+// clean cleans old connections. Must be called after connPool is locked.
 func (p *connPool) clean() (connRemoved, connRemain int) {
-	p.Lock()
-	defer p.Unlock()
-
-	if p.pool.Len() == 0 { // nothing to clean up
-		return 0, 0
-	}
-
 	// remove expired connections
 	var next *list.Element // temporarily store e.Next(), which will not available after list.Remove().
 	for e := p.pool.Front(); e != nil; e = next {
-		dc := e.Value.(*dnsConn)
-		if time.Since(dc.peerLastActiveTime) > p.ttl { // expired, release the resources
+		next = e.Next()
+		pe := e.Value.(*poolElem)
+		if time.Now().After(pe.expiredTime) { // expired, release the resources
 			connRemoved++
-			dc.Conn.Close()
-			next = e.Next()
-			p.pool.Remove(e)
-		}
-	}
-
-	// when the pool is full
-	if p.pool.Len() >= p.maxSize {
-		mid := p.pool.Len() >> 1
-
-		i := 0
-		for e := p.pool.Front(); e != nil; e = next {
-			if i >= mid {
-				break
-			}
-			connRemoved++
-			i++
-			dc := e.Value.(*dnsConn)
-			dc.Conn.Close()
-			next = e.Next()
+			pe.c.Close()
 			p.pool.Remove(e)
 		}
 	}
@@ -645,66 +580,47 @@ func (p *connPool) clean() (connRemoved, connRemain int) {
 	return connRemoved, p.pool.Len()
 }
 
-func (p *connPool) put(dc *dnsConn) {
-	if p == nil {
-		return
+func (p *connPool) put(c net.Conn) {
+	var poppedPoolElem *poolElem
+	p.Lock()
+	if p.pool.Len() >= p.maxSize { // if pool is full, pop it's first(oldest) element.
+		e := p.pool.Front()
+		poppedPoolElem = e.Value.(*poolElem)
+		p.pool.Remove(e)
 	}
+	pe := &poolElem{c: c, expiredTime: time.Now().Add(p.ttl)}
+	p.pool.PushBack(pe)
+	p.Unlock()
 
-	if dc == nil || dc.Conn == nil {
-		return
-	}
-
-	if dc.frameLeft == unknownBrokenDataSize { // this conn is broken, it should not be reused.
-		dc.Conn.Close()
-		return
+	if poppedPoolElem != nil {
+		poppedPoolElem.c.Close() // release the old connection
 	}
 
 	p.tryStartCleanerGoroutine()
-
-	var poolIsFull bool
-	p.Lock()
-	if p.pool.Len() >= p.maxSize {
-		poolIsFull = true
-	} else {
-		p.pool.PushBack(dc)
-	}
-	p.Unlock()
-
-	if poolIsFull {
-		dc.Conn.Close() // pool is full
-	}
 }
 
-func (p *connPool) get() (dc *dnsConn) {
-	if p == nil {
-		return nil
-	}
-
+func (p *connPool) get() (c net.Conn) {
+	var pe *poolElem
 	p.Lock()
 	e := p.pool.Back()
 	if e != nil {
-		dc = e.Value.(*dnsConn)
+		pe = e.Value.(*poolElem)
 		p.pool.Remove(e)
 	}
 	p.Unlock()
 
-	if dc != nil {
-		if time.Since(dc.peerLastActiveTime) > p.ttl {
-			dc.Conn.Close() // expired
+	if pe != nil {
+		if time.Now().After(pe.expiredTime) {
+			pe.c.Close() // expired
 			return nil
 		}
-
-		return dc
+		return pe.c
 	}
 
 	return nil // no available connection in pool
 }
 
 func (p *connPool) connRemain() int {
-	if p == nil {
-		return 0
-	}
-
 	p.Lock()
 	defer p.Unlock()
 
@@ -712,13 +628,13 @@ func (p *connPool) connRemain() int {
 }
 
 type upstreamDoH struct {
-	preparedURL []byte
-	client      *http.Client
+	urlPrefix string
+	client    *http.Client
 }
 
-func newDoHUpstream(urlStr string, dialContext func(ctx context.Context, network, address string) (net.Conn, error), tlsConfig *tls.Config) (*upstreamDoH, error) {
-	// check urlStr
-	u, err := url.ParseRequestURI(urlStr)
+func newDoHUpstream(urlPrefix string, dialContext func(ctx context.Context, network, address string) (net.Conn, error), tlsConfig *tls.Config) (*upstreamDoH, error) {
+	// check urlPrefix
+	u, err := url.ParseRequestURI(urlPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)
 	}
@@ -728,11 +644,11 @@ func newDoHUpstream(urlStr string, dialContext func(ctx context.Context, network
 	}
 
 	u.ForceQuery = true // make sure we have a '?' at somewhere
-	urlStr = u.String()
-	if strings.HasSuffix(urlStr, "?") {
-		urlStr = urlStr + "dns=" // the only one and the first arg
+	urlPrefix = u.String()
+	if strings.HasSuffix(urlPrefix, "?") {
+		urlPrefix = urlPrefix + "dns=" // the only one and the first arg
 	} else {
-		urlStr = urlStr + "&dns=" // the last arg
+		urlPrefix = urlPrefix + "&dns=" // the last arg
 	}
 
 	transport := &http.Transport{
@@ -747,7 +663,7 @@ func newDoHUpstream(urlStr string, dialContext func(ctx context.Context, network
 	http2.ConfigureTransport(transport) // enable http2
 
 	c := new(upstreamDoH)
-	c.preparedURL = []byte(urlStr)
+	c.urlPrefix = urlPrefix
 	c.client = &http.Client{
 		Transport: transport,
 	}
@@ -784,7 +700,7 @@ func (u *upstreamDoH) Exchange(_ context.Context, q *dns.Msg) (r *dns.Msg, err e
 	// That's why we use base64.RawURLEncoding
 	urlBuilder := acquireDoHURLBuilder()
 	defer releaseDoHURLBuilder(urlBuilder)
-	urlBuilder.Write(u.preparedURL)
+	urlBuilder.WriteString(u.urlPrefix)
 	encoder := base64.NewEncoder(base64.RawURLEncoding, urlBuilder)
 	encoder.Write(rRaw)
 	encoder.Close()
@@ -821,37 +737,35 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) 
 		return nil, fmt.Errorf("bad http status codes %d", resp.StatusCode)
 	}
 
-	// check Content-Length
-	if resp.ContentLength > dns.MaxMsgSize {
-		return nil, fmt.Errorf("content-length %d is bigger than dns.MaxMsgSize %d", resp.ContentLength, dns.MaxMsgSize)
-	}
-
-	if resp.ContentLength >= 0 && resp.ContentLength < 12 {
-		return nil, fmt.Errorf("content-length %d is smaller than dns header size 12", resp.ContentLength)
-	}
-
 	var buf []byte
-	if resp.ContentLength > 12 {
+	// read body
+	switch {
+	case resp.ContentLength > dns.MaxMsgSize:
+		return nil, fmt.Errorf("content-length %d is bigger than dns.MaxMsgSize %d", resp.ContentLength, dns.MaxMsgSize)
+	case resp.ContentLength > 12:
 		buf = pool.GetMsgBuf(int(resp.ContentLength))
 		defer pool.ReleaseMsgBuf(buf)
 		_, err = io.ReadFull(resp.Body, buf)
 		if err != nil {
 			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
 		}
-	} else { // resp.ContentLength = -1, unknown length
+	case resp.ContentLength >= 0:
+		return nil, fmt.Errorf("content-length %d is smaller than dns header size 12", resp.ContentLength)
+	case resp.ContentLength == -1: // unknown length
 		bb := acquireDoHReadBuf()
 		defer releaseDoHReadBuf(bb)
 		n, err := bb.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize+1))
-		if n > dns.MaxMsgSize {
-			return nil, fmt.Errorf("response body is too large, first 1kb data: %s", string(bb.Bytes()[:1024]))
-		}
 		if err != nil {
 			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
 		}
-		if bb.Len() < 12 {
-			return nil, dns.ErrShortRead
+
+		if n > dns.MaxMsgSize || n < 12 {
+			return nil, fmt.Errorf("invalid body length: %d", n)
 		}
+
 		buf = bb.Bytes()
+	default:
+		return nil, fmt.Errorf("invalid body length: %d", resp.ContentLength)
 	}
 
 	r := new(dns.Msg)
@@ -961,4 +875,13 @@ func (b *bucket) release() {
 	}
 
 	b.i--
+}
+
+func contextIsDone(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
 }

@@ -125,7 +125,7 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 
 			for {
 				c.SetReadDeadline(time.Now().Add(serverTCPReadTimeout))
-				q, _, _, err := readMsgFromTCP(c)
+				q, _, err := readMsgFromTCP(c)
 				if err != nil {
 					return // read err, close the conn
 				}

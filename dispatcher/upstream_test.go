@@ -190,39 +190,22 @@ func Test_getUpstreamDialContextFunc(t *testing.T) {
 func Test_connPool(t *testing.T) {
 	conn, _ := net.Pipe()
 
-	// nil pool should be ignored
 	var cp *connPool
-	cp.put(newDNSConn(conn, time.Now())) // do nothing
-	if c := cp.get(); c != nil {
-		t.Fatal("cp should be empty")
-	}
-	if n := cp.connRemain(); n != 0 {
-		t.Fatal("connRemain should == 0")
-	}
-
-	// zero size pool or 0 ttl should return a nil pool
-	if cp := newConnPool(0, time.Second, time.Second); cp != nil {
-		t.Fatal("init a zero size pool should return a nil pool")
-	}
-	if cp := newConnPool(8, 0, time.Second); cp != nil {
-		t.Fatal("init a 0 ttl pool should return a nil pool")
-	}
-
 	cp = newConnPool(8, time.Millisecond*500, time.Millisecond*250)
 	if c := cp.get(); c != nil {
 		t.Fatal("cp should be empty")
 	}
 
 	for i := 0; i < 8; i++ {
-		cp.put(newDNSConn(conn, time.Now()))
+		cp.put(conn)
 	}
 	if cp.pool.Len() != 8 {
 		t.Fatal("cp should have 8 elems")
 	}
-	if atomic.LoadInt32(&cp.cleanerLocker) != cleanerOnline {
+	if atomic.LoadInt32(&cp.cleanerStatus) != cleanerOnline {
 		t.Fatal("cp cleaner should be online")
 	}
-	cp.put(newDNSConn(conn, time.Now())) // if cp is full, it will not add this conn.
+	cp.put(conn) // if cp is full.
 	if cp.pool.Len() != 8 {
 		t.Fatalf("cp should have 8 elems, but got %d", cp.pool.Len())
 	}
@@ -237,7 +220,7 @@ func Test_connPool(t *testing.T) {
 	if cp.pool.Len() != 0 {             // all expired elems are removed
 		t.Fatalf("cp should have 0 elems, but got %d", cp.pool.Len())
 	}
-	if atomic.LoadInt32(&cp.cleanerLocker) != cleanerOffline { // if no elem in pool, cleaner should exit.
+	if atomic.LoadInt32(&cp.cleanerStatus) != cleanerOffline { // if no elem in pool, cleaner should exit.
 		t.Fatal("cp cleaner should be offline")
 	}
 }
