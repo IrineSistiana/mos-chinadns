@@ -15,7 +15,7 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package domainlist
+package netlist
 
 import (
 	"bufio"
@@ -23,24 +23,30 @@ import (
 	"io"
 	"os"
 	"strings"
-
-	"github.com/miekg/dns"
 )
 
-func LoadFormFile(file string, continueOnInvalidString bool) (*List, error) {
+//NewListFromFile read IP list from a file, if no valid IP addr was found,
+//it will return a empty NetList, NOT nil. NetList will be a sorted list.
+func NewListFromFile(file string, continueOnInvalidString bool) (*List, error) {
+
 	f, err := os.Open(file)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return LoadFormReader(f, continueOnInvalidString)
+	return NewListFromReader(f, continueOnInvalidString)
 }
 
-func LoadFormReader(r io.Reader, continueOnInvalidString bool) (*List, error) {
-	l := New()
+//NewListFromReader read IP list from a reader, if no valid IP addr was found,
+//it will return a empty NetList, NOT nil. NetList will be a sorted list.
+func NewListFromReader(reader io.Reader, continueOnInvalidString bool) (*List, error) {
 
+	ipNetList := NewNetList()
+	s := bufio.NewScanner(reader)
+
+	//count how many lines we have readed.
 	lineCounter := 0
-	s := bufio.NewScanner(r)
+
 	for s.Scan() {
 		lineCounter++
 		line := strings.TrimSpace(s.Text())
@@ -50,17 +56,18 @@ func LoadFormReader(r io.Reader, continueOnInvalidString bool) (*List, error) {
 			continue
 		}
 
-		fqdn := dns.Fqdn(line)
-		if _, ok := dns.IsDomainName(fqdn); !ok {
+		ipNet, err := ParseCIDR(line)
+		if err != nil {
 			if continueOnInvalidString {
 				continue
 			} else {
-				return nil, fmt.Errorf("invaild domain [%s] at line %d", line, lineCounter)
+				return nil, fmt.Errorf("invaild CIDR format %s in line %d", line, lineCounter)
 			}
 		}
-		l.Add(fqdn)
 
+		ipNetList.Append(ipNet)
 	}
 
-	return l, nil
+	ipNetList.Sort()
+	return ipNetList, nil
 }

@@ -219,7 +219,7 @@ func loadDomainPolicy(f string) (*domainlist.List, error) {
 	}
 
 	// load from file
-	list, err := domainlist.LoadFormFile(f)
+	list, err := domainlist.LoadFormFile(f, true)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +242,7 @@ func loadIPPolicy(f string) (*netlist.List, error) {
 	}
 
 	// load from file
-	list, err := netlist.NewListFromFile(f)
+	list, err := netlist.NewListFromFile(f, true)
 	if err != nil {
 		return nil, err
 	}

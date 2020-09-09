@@ -17,12 +17,7 @@
 package netlist
 
 import (
-	"bufio"
-	"fmt"
-	"io"
-	"os"
 	"sort"
-	"strings"
 )
 
 //List is a list of Nets. All Nets will be in ipv6 format, even it's
@@ -37,49 +32,6 @@ func NewNetList() *List {
 	return &List{
 		elems: make([]Net, 0),
 	}
-}
-
-//NewListFromFile read IP list from a file, if no valid IP addr was found,
-//it will return a empty NetList, NOT nil. NetList will be a sorted list.
-func NewListFromFile(file string) (*List, error) {
-
-	f, err := os.Open(file)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return NewListFromReader(f)
-}
-
-//NewListFromReader read IP list from a reader, if no valid IP addr was found,
-//it will return a empty NetList, NOT nil. NetList will be a sorted list.
-func NewListFromReader(reader io.Reader) (*List, error) {
-
-	ipNetList := NewNetList()
-	s := bufio.NewScanner(reader)
-
-	//count how many lines we have readed.
-	lineCounter := 0
-
-	for s.Scan() {
-		lineCounter++
-		line := strings.TrimSpace(s.Text())
-
-		//ignore lines begin with # and empty lines
-		if len(line) == 0 || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		ipnet, err := ParseCIDR(line)
-		if err != nil {
-			return nil, fmt.Errorf("invaild CIDR format in line %d", lineCounter)
-		}
-
-		ipNetList.Append(ipnet)
-	}
-
-	ipNetList.Sort()
-	return ipNetList, nil
 }
 
 //Append appends new Nets to the list.
