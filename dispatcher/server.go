@@ -55,8 +55,8 @@ func (d *Dispatcher) StartServer() error {
 		addr := ss[1]
 
 		switch network {
-		case "tcp":
-			l, err := net.Listen("tcp", addr)
+		case "tcp", "tcp4", "tcp6":
+			l, err := net.Listen(network, addr)
 			if err != nil {
 				return err
 			}
@@ -72,7 +72,7 @@ func (d *Dispatcher) StartServer() error {
 				default:
 				}
 			}()
-		case "udp":
+		case "udp", "udp4", "udp6":
 			l, err := net.ListenPacket("udp", addr)
 			if err != nil {
 				return err
