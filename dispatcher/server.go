@@ -20,20 +20,20 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"net"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/miekg/dns"
-
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
 )
 
 const (
 	serverTCPReadTimeout  = time.Second * 8
 	serverTCPWriteTimeout = time.Second
 	serverUDPWriteTimeout = time.Second
+
+	queryTimeout = time.Second * 5
 )
 
 // StartServer starts mos-chinadns. Will always return a non-nil err.
@@ -61,7 +61,7 @@ func (d *Dispatcher) StartServer() error {
 				return err
 			}
 			defer l.Close()
-			logger.Infof("StartServer: tcp server started at %s", l.Addr())
+			logger.GetStd().Infof("StartServer: tcp server started at %s", l.Addr())
 
 			wg.Add(1)
 			go func() {
@@ -78,7 +78,7 @@ func (d *Dispatcher) StartServer() error {
 				return err
 			}
 			defer l.Close()
-			logger.Infof("StartServer: udp server started at %s", l.LocalAddr())
+			logger.GetStd().Infof("StartServer: udp server started at %s", l.LocalAddr())
 
 			wg.Add(1)
 			go func() {
@@ -110,7 +110,7 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 		if err != nil {
 			er, ok := err.(net.Error)
 			if ok && er.Temporary() {
-				logger.Warnf("listenAndServeTCP: Accept: temporary err: %v", err)
+				logger.GetStd().Warnf("listenAndServeTCP: Accept: temporary err: %v", err)
 				time.Sleep(time.Millisecond * 100)
 				continue
 			} else {
@@ -125,7 +125,7 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 
 			for {
 				c.SetReadDeadline(time.Now().Add(serverTCPReadTimeout))
-				q, _, err := readMsgFromTCP(c)
+				q, _, err := utils.ReadMsgFromTCP(c)
 				if err != nil {
 					return // read err, close the conn
 				}
@@ -134,21 +134,18 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 					queryCtx, cancel := context.WithTimeout(tcpConnCtx, queryTimeout)
 					defer cancel()
 
-					requestLogger := getRequestLogger(q)
-					defer releaseRequestLogger(requestLogger)
-
-					requestLogger.Debugf("listenAndServeTCP %s: new query from %s", l.Addr(), c.RemoteAddr())
+					logger.GetStd().Debugf("listenAndServeTCP %s: [%v %d]: new query from %s,", l.Addr(), q.Question, q.Id, c.RemoteAddr())
 
 					r, err := d.ServeDNS(queryCtx, q)
 					if err != nil {
-						requestLogger.Warnf("listenAndServeTCP %s: query failed: %v", l.Addr(), err)
+						logger.GetStd().Warnf("listenAndServeTCP %s: [%v %d]: query failed: %v", l.Addr(), q.Question, q.Id, err)
 						return // ignore it, result is empty
 					}
 
 					c.SetWriteDeadline(time.Now().Add(serverTCPWriteTimeout))
-					_, err = writeMsgToTCP(c, r)
+					_, err = utils.WriteMsgToTCP(c, r)
 					if err != nil {
-						requestLogger.Warnf("listenAndServeTCP %s: failed to send reply back, writeMsgToTCP: %v", l.Addr(), err)
+						logger.GetStd().Warnf("listenAndServeTCP %s: [%v %d]: failed to send reply back, WriteMsgToTCP: %v", l.Addr(), q.Question, q.Id, err)
 					}
 				}()
 
@@ -159,61 +156,42 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 
 // listenAndServeUDP start a udp server at given l. Will always return non-nil err.
 func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
+	listenerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	readBuf := make([]byte, MaxUDPSize)
 	for {
-		n, from, err := l.ReadFrom(readBuf)
+		q, from, _, err := utils.ReadUDPMsgFrom(l, utils.IPv4UdpMaxPayload)
 		if err != nil {
-			er, ok := err.(net.Error)
-			if ok && er.Temporary() {
-				logger.Warnf("listenAndServeUDP: ReadFrom(): temporary err: %v", err)
-				time.Sleep(time.Millisecond * 100)
+			netErr, ok := err.(net.Error)
+			if ok { // is a net err
+				if netErr.Temporary() {
+					logger.GetStd().Warnf("listenAndServeUDP: listener temporary err: %v", err)
+					time.Sleep(time.Millisecond * 100)
+					continue
+				} else {
+					return fmt.Errorf("listenAndServeUDP: unexpected listener err: %v", err)
+				}
+			} else { // invalid msg
 				continue
-			} else {
-				return fmt.Errorf("ReadFrom: %s", err)
 			}
-		}
-
-		// msg small than headerSize
-		if n < 12 {
-			continue
-		}
-
-		q := new(dns.Msg)
-		err = q.Unpack(readBuf[:n])
-		// invalid msg
-		if err != nil {
-			continue
 		}
 
 		go func() {
-			queryCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+			queryCtx, cancel := context.WithTimeout(listenerCtx, queryTimeout)
 			defer cancel()
 
-			requestLogger := getRequestLogger(q)
-			defer releaseRequestLogger(requestLogger)
-
-			requestLogger.Debugf("listenAndServeUDP %s: new query from %s", l.LocalAddr(), from)
+			logger.GetStd().Debugf("listenAndServeUDP %s: [%v %d]: new query from %s", l.LocalAddr(), q.Question, q.Id, from)
 
 			r, err := d.ServeDNS(queryCtx, q)
 			if err != nil {
-				requestLogger.Warnf("listenAndServeUDP %s: query failed: %v", l.LocalAddr(), err)
-				return
-			}
-
-			buf := pool.AcquirePackBuf()
-			defer pool.ReleasePackBuf(buf)
-
-			rRaw, err := r.PackBuffer(buf)
-			if err != nil {
-				requestLogger.Warnf("listenAndServeUDP %s: failed to send reply back, PackBuffer err: %v", l.LocalAddr(), err)
+				logger.GetStd().Warnf("listenAndServeUDP %s: [%v %d]: query failed: %v", l.LocalAddr(), q.Question, q.Id, err)
 				return
 			}
 
 			l.SetWriteDeadline(time.Now().Add(serverUDPWriteTimeout))
-			_, err = l.WriteTo(rRaw, from)
+			_, err = utils.WriteUDPMsgTo(r, l, from)
 			if err != nil {
-				requestLogger.Warnf("listenAndServeUDP %s: failed to send reply back, WriteTo err: %v", l.LocalAddr(), err)
+				logger.GetStd().Warnf("listenAndServeUDP %s: [%v %d]: failed to send reply back: %v", l.LocalAddr(), q.Question, q.Id, err)
 			}
 		}()
 	}

@@ -20,6 +20,7 @@ package netlist
 import (
 	"bufio"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 	"io"
 	"os"
 	"strings"
@@ -44,7 +45,7 @@ func NewListFromReader(reader io.Reader, continueOnInvalidString bool) (*List, e
 	ipNetList := NewNetList()
 	s := bufio.NewScanner(reader)
 
-	//count how many lines we have readed.
+	//count how many lines we have read.
 	lineCounter := 0
 
 	for s.Scan() {
@@ -59,9 +60,10 @@ func NewListFromReader(reader io.Reader, continueOnInvalidString bool) (*List, e
 		ipNet, err := ParseCIDR(line)
 		if err != nil {
 			if continueOnInvalidString {
+				logger.GetStd().Warnf("NewListFromReader: invalid CIDR format %s in line %d", line, lineCounter)
 				continue
 			} else {
-				return nil, fmt.Errorf("invaild CIDR format %s in line %d", line, lineCounter)
+				return nil, fmt.Errorf("invalid CIDR format %s in line %d", line, lineCounter)
 			}
 		}
 

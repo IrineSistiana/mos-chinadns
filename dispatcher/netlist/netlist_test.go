@@ -51,7 +51,7 @@ var (
 )
 
 func TestIPNetList_New_And_Contains(t *testing.T) {
-	ipNetList, err := NewListFromReader(bytes.NewBufferString(rawList))
+	ipNetList, err := NewListFromReader(bytes.NewBufferString(rawList), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestIPNetList_New_And_Contains(t *testing.T) {
 }
 
 func BenchmarkListContains(b *testing.B) {
-	iplist, err := NewListFromFile("./chn.list")
+	iplist, err := NewListFromFile("./chn.list", false)
 	if err != nil {
 		b.Error(err)
 		return
@@ -117,12 +117,12 @@ func BenchmarkListContains(b *testing.B) {
 func BenchmarkNetContains(b *testing.B) {
 	ip := net.IP{222, 222, 222, 222}
 	ipv6 := Conv(ip.To16())
-	net := NewNet(ipv6, 112)
-	b.Logf("is in net: %v", net.Contains(ipv6))
+	ipv6Net := NewNet(ipv6, 112)
+	b.Logf("is in ipv6Net: %v", ipv6Net.Contains(ipv6))
 	// tmp := &f.next.next.value
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		net.Contains(ipv6)
+		ipv6Net.Contains(ipv6)
 	}
 }
 
@@ -137,7 +137,7 @@ func BenchmarkConvIP(b *testing.B) {
 
 func BenchmarkLoadList(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_, err := NewListFromReader(bytes.NewBufferString(rawList))
+		_, err := NewListFromReader(bytes.NewBufferString(rawList), false)
 		if err != nil {
 			b.Error(err)
 			return

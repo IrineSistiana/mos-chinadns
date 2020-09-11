@@ -15,42 +15,15 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package pool
+package upstream
 
-import (
-	"sync"
+import "time"
+
+const (
+	tlsHandshakeTimeout = time.Second * 5
+	dialTCPTimeout      = time.Second * 5
+	dialUDPTimeout      = time.Second * 5
+	generalWriteTimeout = time.Second * 1
+	generalReadTimeout  = time.Second * 5
+	dohIOTimeout        = time.Second * 10
 )
-
-var (
-	tcpHeaderBufPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 2)
-		},
-	}
-
-	tcpWriteBufPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 2048)
-		},
-	}
-)
-
-func GetTCPHeaderBuf() []byte {
-	return tcpHeaderBufPool.Get().([]byte)
-}
-
-func ReleaseTCPHeaderBuf(buf []byte) {
-	tcpHeaderBufPool.Put(buf)
-}
-
-// GetTCPWriteBuf returns a 2048-byte slice buf
-func GetTCPWriteBuf() []byte {
-	return tcpWriteBufPool.Get().([]byte)
-}
-
-func ReleaseTCPWriteBuf(buf []byte) {
-	if len(buf) != 2048 {
-		panic("invalid buf size")
-	}
-	tcpWriteBufPool.Put(buf)
-}

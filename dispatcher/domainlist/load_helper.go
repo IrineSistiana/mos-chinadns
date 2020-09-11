@@ -20,6 +20,7 @@ package domainlist
 import (
 	"bufio"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 	"io"
 	"os"
 	"strings"
@@ -27,16 +28,16 @@ import (
 	"github.com/miekg/dns"
 )
 
-func LoadFormFile(file string, continueOnInvalidString bool) (*List, error) {
+func NewListFormFile(file string, continueOnInvalidString bool) (*List, error) {
 	f, err := os.Open(file)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return LoadFormReader(f, continueOnInvalidString)
+	return NewListFormReader(f, continueOnInvalidString)
 }
 
-func LoadFormReader(r io.Reader, continueOnInvalidString bool) (*List, error) {
+func NewListFormReader(r io.Reader, continueOnInvalidString bool) (*List, error) {
 	l := New()
 
 	lineCounter := 0
@@ -53,9 +54,9 @@ func LoadFormReader(r io.Reader, continueOnInvalidString bool) (*List, error) {
 		fqdn := dns.Fqdn(line)
 		if _, ok := dns.IsDomainName(fqdn); !ok {
 			if continueOnInvalidString {
-				continue
+				logger.GetStd().Warnf("NewListFormReader: invalid domain [%s] at line %d", line, lineCounter)
 			} else {
-				return nil, fmt.Errorf("invaild domain [%s] at line %d", line, lineCounter)
+				return nil, fmt.Errorf("invalid domain [%s] at line %d", line, lineCounter)
 			}
 		}
 		l.Add(fqdn)

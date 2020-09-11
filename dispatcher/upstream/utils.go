@@ -15,30 +15,17 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package pool
+package upstream
 
 import (
-	"github.com/miekg/dns"
-	"sync"
+	"context"
 )
 
-var resChanPool = sync.Pool{
-	New: func() interface{} {
-		return make(chan *dns.Msg, 1)
-	},
-}
-
-func GetResChan() chan *dns.Msg {
-	return resChanPool.Get().(chan *dns.Msg)
-}
-
-func ReleaseResChan(c chan *dns.Msg) {
-	for {
-		select {
-		case <-c:
-		default:
-			resChanPool.Put(c)
-			return
-		}
+func contextIsDone(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
 	}
 }

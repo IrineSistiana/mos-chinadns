@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 	"net"
 	"os"
 	"os/signal"
@@ -160,12 +161,12 @@ func main() {
 
 	switch {
 	case *quiet:
-		dispatcher.SetLoggerLevel(logrus.ErrorLevel)
+		logger.GetStd().SetLevel(logrus.ErrorLevel)
 	case *debug:
-		dispatcher.SetLoggerLevel(logrus.DebugLevel)
-		go printStatus(time.Second * 30)
+		logger.GetStd().SetLevel(logrus.DebugLevel)
+		go printStatus(time.Second * 10)
 	default:
-		dispatcher.SetLoggerLevel(logrus.InfoLevel)
+		logger.GetStd().SetLevel(logrus.InfoLevel)
 	}
 
 	err = d.StartServer()
@@ -195,6 +196,9 @@ func probTCPTimeout(addr string, isTLS bool) error {
 		tlsConfig := new(tls.Config)
 		tlsConfig.InsecureSkipVerify = true
 		tlsConn, err := tls.Dial("tcp", addr, tlsConfig)
+		if err != nil {
+			return fmt.Errorf("failed to dail tsl connection: %v", err)
+		}
 		tlsConn.SetDeadline(time.Now().Add(time.Second * 5))
 		logrus.Info("connected, start TLS handshaking")
 		err = tlsConn.Handshake()

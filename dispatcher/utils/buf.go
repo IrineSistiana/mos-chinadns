@@ -15,24 +15,37 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package pool
+package utils
 
-import (
-	"sync"
+import "sync"
+
+var (
+	tcpHeaderBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 2)
+		},
+	}
+
+	tcpWriteBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 2048)
+		},
+	}
 )
 
-var packBufPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 512) // 512b is big enough for most dns msg.
-	},
+func getTCPHeaderBuf() []byte {
+	return tcpHeaderBufPool.Get().([]byte)
 }
 
-// AcquirePackBuf should only be used by dns.Msg.PackBuffer()
-func AcquirePackBuf() []byte {
-	return packBufPool.Get().([]byte)
+func releaseTCPHeaderBuf(buf []byte) {
+	tcpHeaderBufPool.Put(buf)
 }
 
-// ReleasePackBuf should only releases the buf returned by dns.Msg.PackBuffer()
-func ReleasePackBuf(buf []byte) {
-	packBufPool.Put(buf)
+// getTCPWriteBuf returns a 2048-byte slice buf
+func getTCPWriteBuf() []byte {
+	return tcpWriteBufPool.Get().([]byte)
+}
+
+func releaseTCPWriteBuf(buf []byte) {
+	tcpWriteBufPool.Put(buf)
 }

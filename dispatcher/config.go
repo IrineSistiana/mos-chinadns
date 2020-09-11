@@ -29,15 +29,15 @@ type Config struct {
 		Bind []string `yaml:"bind"`
 	} `yaml:"dispatcher"`
 
-	Upstream map[string]*BasicServerConfig `yaml:"upstream"`
+	Upstream map[string]*BasicUpstreamConfig `yaml:"upstream"`
 
 	CA struct {
 		Path []string `yaml:"path"`
 	} `yaml:"ca"`
 }
 
-// BasicServerConfig is a basic config for a upstream dns server.
-type BasicServerConfig struct {
+// BasicUpstreamConfig is a basic config for a dns upstream.
+type BasicUpstreamConfig struct {
 	Addr     string `yaml:"addr"`
 	Protocol string `yaml:"protocol"`
 	Socks5   string `yaml:"socks5"`
@@ -93,9 +93,9 @@ func LoadConfig(p string) (*Config, error) {
 // GenConfig generates a template config to path p.
 func GenConfig(p string) error {
 	c := new(Config)
-	c.Upstream = make(map[string]*BasicServerConfig)
-	c.Upstream["local"] = new(BasicServerConfig)
-	c.Upstream["remote"] = new(BasicServerConfig)
+	c.Upstream = make(map[string]*BasicUpstreamConfig)
+	c.Upstream["local"] = new(BasicUpstreamConfig)
+	c.Upstream["remote"] = new(BasicUpstreamConfig)
 
 	f, err := os.Create(p)
 	if err != nil {

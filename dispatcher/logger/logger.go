@@ -15,45 +15,17 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package dispatcher
+// logger for the whole dispatcher package
+package logger
 
 import (
-	"github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
-	"sync"
 )
 
 var (
-	logger = logrus.New()
+	std = logrus.StandardLogger()
 )
 
-func SetLoggerLevel(level logrus.Level) {
-	logger.SetLevel(level)
-}
-
-var requestLoggerPool = sync.Pool{
-	New: func() interface{} {
-		f := make(logrus.Fields, 3+2) // default is three fields, we add 2 more
-		f["id"] = nil
-		f["question"] = nil
-		e := &logrus.Entry{
-			Data: f,
-		}
-		return e
-	},
-}
-
-func getRequestLogger(q *dns.Msg) *logrus.Entry {
-	entry := requestLoggerPool.Get().(*logrus.Entry)
-	entry.Logger = logger
-	entry.Data["id"] = q.Id
-	entry.Data["question"] = q.Question
-	return entry
-}
-
-func releaseRequestLogger(entry *logrus.Entry) {
-	entry.Data["id"] = nil
-	entry.Data["question"] = nil
-	entry.Logger = nil
-	requestLoggerPool.Put(entry)
+func GetStd() *logrus.Logger {
+	return std
 }

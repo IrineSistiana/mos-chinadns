@@ -26,23 +26,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 
 	"github.com/miekg/dns"
-)
-
-const (
-	// MaxUDPSize max udp packet size
-	MaxUDPSize = 1480
-
-	queryTimeout = time.Second * 5
 )
 
 // Dispatcher represents a dns query dispatcher
 type Dispatcher struct {
 	config *Config
 
-	upstreams map[string]Upstream
+	upstreams []upstreamWithName
 }
 
 // InitDispatcher inits a dispatcher from configuration
@@ -57,19 +50,19 @@ func InitDispatcher(conf *Config) (*Dispatcher, error) {
 		if err != nil {
 			return nil, fmt.Errorf("caPath2Pool: %w", err)
 		}
-		logger.Info("initDispatcher: CA cert loaded")
+		logger.GetStd().Info("initDispatcher: CA cert loaded")
 	}
 
 	if len(conf.Upstream) == 0 {
 		return nil, fmt.Errorf("no upstream")
 	}
-	d.upstreams = make(map[string]Upstream)
+	d.upstreams = make([]upstreamWithName, 0, len(conf.Upstream))
 	for name := range conf.Upstream {
-		u, err := NewUpstream(conf.Upstream[name], rootCAs)
+		u, err := NewUpstream(name, conf.Upstream[name], rootCAs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to init upstream %s: %w", name, err)
 		}
-		d.upstreams[name] = u
+		d.upstreams = append(d.upstreams, u)
 	}
 
 	return d, nil
@@ -86,18 +79,10 @@ var (
 )
 
 func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
-	requestLogger := getRequestLogger(q)
-	resChan := pool.GetResChan()
-
-	exchangeDNSWG := sync.WaitGroup{}
-	exchangeDNSWG.Add(1)
-	defer exchangeDNSWG.Done()
-
+	resChan := make(chan *dns.Msg, 1)
 	upstreamWG := sync.WaitGroup{}
-
-	for name, u := range d.upstreams {
-		name := name
-		u := u
+	for i := range d.upstreams {
+		u := d.upstreams[i]
 
 		upstreamWG.Add(1)
 		go func() {
@@ -108,13 +93,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
-					requestLogger.Warnf("dispatch: upstream %s err after %dms: %v,", name, rtt, err)
+					logger.GetStd().Warnf("dispatch: [%v %d]: upstream %s err after %dms: %v,", q.Question, q.Id, u.getName(), rtt, err)
 				}
 				return
 			}
 
 			if r != nil {
-				requestLogger.Debugf("dispatch: reply from upstream %s accepted, rtt: %dms", name, rtt)
+				logger.GetStd().Debugf("dispatch: [%v %d]: reply from upstream %s accepted, rtt: %dms", q.Question, q.Id, u.getName(), rtt)
 				select {
 				case resChan <- r:
 				default:
@@ -125,7 +110,6 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 	upstreamFailedNotificationChan := make(chan struct{}, 0)
 
 	// this go routine notifies the dispatch if all upstreams are failed
-	// and release some resources.
 	go func() {
 		// all upstreams are returned
 		upstreamWG.Wait()
@@ -134,13 +118,6 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 		if len(resChan) == 0 {
 			close(upstreamFailedNotificationChan)
 		}
-
-		// dispatch is returned
-		exchangeDNSWG.Wait()
-
-		// time to finial cleanup
-		releaseRequestLogger(requestLogger)
-		pool.ReleaseResChan(resChan)
 	}()
 
 	select {

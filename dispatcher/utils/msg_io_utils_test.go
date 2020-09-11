@@ -14,7 +14,7 @@
 //
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
-package dispatcher
+package utils
 
 import (
 	"bytes"
@@ -50,16 +50,16 @@ func Test_readMsgFromTCP(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotM, gotN, err := readMsgFromTCP(tt.args.c)
+			gotM, gotN, err := ReadMsgFromTCP(tt.args.c)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("readMsgFromTCP() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ReadMsgFromTCP() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(gotM, tt.wantM) {
-				t.Errorf("readMsgFromTCP() gotM = %v, want %v", gotM, tt.wantM)
+				t.Errorf("ReadMsgFromTCP() gotM = %v, want %v", gotM, tt.wantM)
 			}
 			if gotN != tt.wantN {
-				t.Errorf("readMsgFromTCP() gotN = %v, want %v", gotN, tt.wantN)
+				t.Errorf("ReadMsgFromTCP() gotN = %v, want %v", gotN, tt.wantN)
 			}
 		})
 	}
@@ -91,16 +91,16 @@ func Test_writeMsgToTCP(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &bytes.Buffer{}
-			gotN, err := writeMsgToTCP(c, tt.args.m)
+			gotN, err := WriteMsgToTCP(c, tt.args.m)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("writeMsgToTCP() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("WriteMsgToTCP() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if gotC := c.String(); gotC != tt.wantC {
-				t.Errorf("writeMsgToTCP() gotC = %v, want %v", gotC, tt.wantC)
+				t.Errorf("WriteMsgToTCP() gotC = %v, want %v", gotC, tt.wantC)
 			}
 			if gotN != tt.wantN {
-				t.Errorf("writeMsgToTCP() gotN = %v, want %v", gotN, tt.wantN)
+				t.Errorf("WriteMsgToTCP() gotN = %v, want %v", gotN, tt.wantN)
 			}
 		})
 	}

@@ -34,9 +34,9 @@ func Test_dispatch(t *testing.T) {
 	u2ip := net.ParseIP("4.3.2.1")
 
 	d := new(Dispatcher)
-	d.upstreams = make(map[string]Upstream)
-	d.upstreams["u1"] = &fakeUpstream{latency: time.Millisecond * 0, ip: u1ip}
-	d.upstreams["u2"] = &fakeUpstream{latency: time.Millisecond * 300, ip: u2ip}
+	d.upstreams = make([]upstreamWithName, 0)
+	d.upstreams = append(d.upstreams, &fakeUpstream{latency: time.Millisecond * 0, ip: u1ip})
+	d.upstreams = append(d.upstreams, &fakeUpstream{latency: time.Millisecond * 300, ip: u2ip})
 
 	r, err := d.dispatch(context.Background(), q)
 	if err != nil {
@@ -53,7 +53,11 @@ type fakeUpstream struct {
 	ip      net.IP
 }
 
-func (u *fakeUpstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
+func (u *fakeUpstream) getName() string {
+	return "fake upstream"
+}
+
+func (u *fakeUpstream) Exchange(_ context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 	r = new(dns.Msg)
 	r.SetReply(q)
 

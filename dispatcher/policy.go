@@ -44,7 +44,7 @@ const (
 	policyFinalActionOnHold
 )
 
-func (pa policyAction) ToPFA() policyFinalAction {
+func (pa policyAction) toPFA() policyFinalAction {
 	switch pa {
 	case policyActionAccept:
 		return policyFinalActionAccept
@@ -150,7 +150,7 @@ func (ps *ipPolicies) check(ip netlist.IPv6) policyFinalAction {
 		}
 
 		if ps.policies[p].list != nil && ps.policies[p].list.Contains(ip) {
-			return ps.policies[p].action.ToPFA()
+			return ps.policies[p].action.toPFA()
 		}
 	}
 
@@ -192,7 +192,7 @@ func (ps *domainPolicies) check(fqdn string) policyFinalAction {
 		}
 
 		if ps.policies[p].list != nil && ps.policies[p].list.Has(fqdn) {
-			return ps.policies[p].action.ToPFA()
+			return ps.policies[p].action.toPFA()
 		}
 	}
 
@@ -219,7 +219,7 @@ func loadDomainPolicy(f string) (*domainlist.List, error) {
 	}
 
 	// load from file
-	list, err := domainlist.LoadFormFile(f, true)
+	list, err := domainlist.NewListFormFile(f, true)
 	if err != nil {
 		return nil, err
 	}

@@ -46,16 +46,3 @@ func assertTrue(b bool) {
 		panic("assert failed")
 	}
 }
-
-func Benchmark_ListHas(b *testing.B) {
-	l, err := LoadFormFile("../chn_domain.list")
-	if err != nil {
-		b.Fatal(err)
-		return
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		l.Has("this.is.a.example.domain.com.")
-	}
-}

@@ -15,16 +15,14 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package dispatcher
+package upstream
 
 import (
-	"testing"
+	"context"
+	"github.com/miekg/dns"
 )
 
-// This test tests if proxy.SOCKS5 still return a proxy.ContextDialer
-func Test_getUpstreamDialContextFunc(t *testing.T) {
-	_, err := getUpstreamDialContextFunc("tcp", "127.0.0.1:1081", "127.0.0.1:1080")
-	if err != nil {
-		t.Fatal(err)
-	}
+// Upstream represents a dns upstream
+type Upstream interface {
+	Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error)
 }

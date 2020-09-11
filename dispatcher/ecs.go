@@ -26,6 +26,11 @@ import (
 	"github.com/miekg/dns"
 )
 
+const (
+	// MaxUDPSize max udp packet size in edns0
+	MaxUDPSize = 1480
+)
+
 func checkMsgHasECS(m *dns.Msg) bool {
 	opt := m.IsEdns0()
 	if opt == nil { // no opt, no ecs
