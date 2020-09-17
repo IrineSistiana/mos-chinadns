@@ -18,9 +18,11 @@
 //     This file is a modified version from github.com/xtaci/smux/blob/master/alloc.go f386d90
 //     license of smux: MIT https://github.com/xtaci/smux/blob/master/LICENSE
 
-package pool
+package bufpool
 
 import (
+	"fmt"
+	"github.com/miekg/dns"
 	"sync"
 )
 
@@ -49,6 +51,14 @@ func NewAllocator() *Allocator {
 
 func GetMsgBuf(size int) []byte {
 	return defaultAllocator.Get(size)
+}
+
+func GetMsgBufFor(m *dns.Msg) ([]byte, error) {
+	l := m.Len()
+	if l > dns.MaxMsgSize || l <= 0 {
+		return nil, fmt.Errorf("msg length %d is invalid", l)
+	}
+	return defaultAllocator.Get(l), nil
 }
 
 func ReleaseMsgBuf(buf []byte) {

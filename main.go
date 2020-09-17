@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 	"net"
 	"os"
@@ -114,7 +115,7 @@ func main() {
 
 	//gen config
 	if len(*genConfigTo) != 0 {
-		err := dispatcher.GenConfig(*genConfigTo)
+		err := config.GenConfig(*genConfigTo)
 		if err != nil {
 			logrus.Fatalf("main: can not generate config template, %v", err)
 		} else {
@@ -149,7 +150,7 @@ func main() {
 		logrus.Fatal("main: need a config file")
 	}
 
-	c, err := dispatcher.LoadConfig(*configPath)
+	c, err := config.LoadConfig(*configPath)
 	if err != nil {
 		logrus.Fatalf("main: can not load config file, %v", err)
 	}

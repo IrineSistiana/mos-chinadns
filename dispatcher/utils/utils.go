@@ -15,27 +15,55 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package pool
+package utils
 
 import (
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 	"sync"
 )
 
-var dnsMsgPool = sync.Pool{
-	New: func() interface{} {
-		return new(dns.Msg)
-	},
+var (
+	tcpHeaderBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 2)
+		},
+	}
+
+	tcpWriteBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 512)
+		},
+	}
+)
+
+func getTCPHeaderBuf() []byte {
+	return tcpHeaderBufPool.Get().([]byte)
 }
 
-func GetMsg() *dns.Msg {
-	return dnsMsgPool.Get().(*dns.Msg)
+func releaseTCPHeaderBuf(buf []byte) {
+	tcpHeaderBufPool.Put(buf)
 }
 
-func ReleaseMsg(m *dns.Msg) {
-	m.Question = nil
-	m.Answer = nil
-	m.Ns = nil
-	m.Extra = nil
-	dnsMsgPool.Put(m)
+// getTCPWriteBuf returns a 2048-byte slice buf
+func getTCPWriteBuf() []byte {
+	return tcpWriteBufPool.Get().([]byte)
+}
+
+func releaseTCPWriteBuf(buf []byte) {
+	tcpWriteBufPool.Put(buf)
+}
+
+func packMsgWithBuffer(m *dns.Msg) (mRaw, buf []byte, err error) {
+	buf, err = bufpool.GetMsgBufFor(m)
+	if err != nil {
+		return
+	}
+
+	mRaw, err = m.PackBuffer(buf)
+	if err != nil {
+		bufpool.ReleaseMsgBuf(buf)
+		return
+	}
+	return
 }

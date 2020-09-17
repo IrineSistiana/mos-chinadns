@@ -31,7 +31,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 	"golang.org/x/net/http2"
 )
@@ -86,23 +86,23 @@ func (u *upstreamDoH) Exchange(_ context.Context, q *dns.Msg) (r *dns.Msg, err e
 	ctx, cancel := context.WithTimeout(context.Background(), dohIOTimeout)
 	defer cancel()
 
+	buf, err := bufpool.GetMsgBufFor(q)
+	if err != nil {
+		return nil, fmt.Errorf("invalid msg q: %v", err)
+	}
+
+	rRaw, err := q.PackBuffer(buf)
+	if err != nil {
+		return nil, fmt.Errorf("invalid msg q: %v", err)
+	}
+
 	// In order to maximize HTTP cache friendliness, DoH clients using media
 	// formats that include the ID field from the DNS message header, such
 	// as "application/dns-message", SHOULD use a DNS ID of 0 in every DNS
 	// request.
 	// https://tools.ietf.org/html/rfc8484 4.1
-	qWithNewID := pool.GetMsg()
-	defer pool.ReleaseMsg(qWithNewID)
-	*qWithNewID = *q // shadow copy, we just want to change its ID
-	qWithNewID.Id = 0
-
-	buf := pool.GetMsgBuf(qWithNewID.Len())
-	defer pool.ReleaseMsgBuf(buf)
-
-	rRaw, err := qWithNewID.PackBuffer(buf)
-	if err != nil {
-		return nil, fmt.Errorf("invalid msg q: %v", err)
-	}
+	rRaw[0] = 0
+	rRaw[1] = 0
 
 	urlBuilder := acquireDoHURLBuilder()
 	defer releaseDoHURLBuilder(urlBuilder)
@@ -154,8 +154,8 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) 
 	case resp.ContentLength > dns.MaxMsgSize:
 		return nil, fmt.Errorf("content-length %d is bigger than dns.MaxMsgSize %d", resp.ContentLength, dns.MaxMsgSize)
 	case resp.ContentLength > 12:
-		buf = pool.GetMsgBuf(int(resp.ContentLength))
-		defer pool.ReleaseMsgBuf(buf)
+		buf = bufpool.GetMsgBuf(int(resp.ContentLength))
+		defer bufpool.ReleaseMsgBuf(buf)
 		_, err = io.ReadFull(resp.Body, buf)
 		if err != nil {
 			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)

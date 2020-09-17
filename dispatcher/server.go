@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
+	"github.com/miekg/dns"
 	"net"
 	"strings"
 	"sync"
@@ -73,7 +74,7 @@ func (d *Dispatcher) StartServer() error {
 				}
 			}()
 		case "udp", "udp4", "udp6":
-			l, err := net.ListenPacket("udp", addr)
+			l, err := net.ListenPacket(network, addr)
 			if err != nil {
 				return err
 			}
@@ -110,11 +111,11 @@ func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
 		if err != nil {
 			er, ok := err.(net.Error)
 			if ok && er.Temporary() {
-				logger.GetStd().Warnf("listenAndServeTCP: Accept: temporary err: %v", err)
+				logger.GetStd().Warnf("listenAndServeTCP: listener: temporary err: %v", err)
 				time.Sleep(time.Millisecond * 100)
 				continue
 			} else {
-				return fmt.Errorf("Accept: %s", err)
+				return fmt.Errorf("listener: %s", err)
 			}
 		}
 
@@ -187,6 +188,18 @@ func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
 				logger.GetStd().Warnf("listenAndServeUDP %s: [%v %d]: query failed: %v", l.LocalAddr(), q.Question, q.Id, err)
 				return
 			}
+
+			// truncate
+			var udpSize int
+			if opt := q.IsEdns0(); opt != nil {
+				udpSize = int(opt.Hdr.Class)
+			} else {
+				udpSize = dns.MinMsgSize
+			}
+			if d.config.Dispatcher.MaxUDPSize > dns.MinMsgSize && udpSize > d.config.Dispatcher.MaxUDPSize {
+				udpSize = d.config.Dispatcher.MaxUDPSize
+			}
+			r.Truncate(udpSize)
 
 			l.SetWriteDeadline(time.Now().Add(serverUDPWriteTimeout))
 			_, err = utils.WriteUDPMsgTo(r, l, from)

@@ -64,7 +64,8 @@ func (u *udpUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err
 	}
 
 exchangeViaNewConn:
-	c, err := dialUDP("udp", u.addr, dialUDPTimeout)
+	dialer := net.Dialer{Timeout: dialUDPTimeout}
+	c, err := dialer.Dial("udp", u.addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial new conntion: %v", err)
 	}
@@ -92,16 +93,19 @@ func (u *udpUpstream) exchangeViaUDPConn(q *dns.Msg, c net.Conn) (r *dns.Msg, er
 	if err != nil { // write err typically is a fatal err
 		return nil, fmt.Errorf("failed to write msg: %v", err)
 	}
-
 	c.SetReadDeadline(time.Now().Add(generalReadTimeout))
-	r, _, err = utils.ReadMsgFromUDP(c, utils.IPv4UdpMaxPayload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read msg: %v", err)
-	}
-	return r, nil
-}
 
-func dialUDP(network, addr string, timeout time.Duration) (c net.Conn, err error) {
-	dialer := net.Dialer{Timeout: timeout}
-	return dialer.Dial(network, addr)
+	for {
+		r, _, err = utils.ReadMsgFromUDP(c, utils.IPv4UdpMaxPayload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read msg: %v", err)
+		}
+
+		// id mismatch, ignore it and read again.
+		// It's quite usual for udp connection. Especially when someone wants to poison you.
+		if r.Id != q.Id {
+			continue
+		}
+		return r, nil
+	}
 }

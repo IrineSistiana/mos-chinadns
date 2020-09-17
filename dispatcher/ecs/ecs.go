@@ -15,7 +15,7 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package dispatcher
+package ecs
 
 import (
 	"fmt"
@@ -31,7 +31,7 @@ const (
 	MaxUDPSize = 1480
 )
 
-func checkMsgHasECS(m *dns.Msg) bool {
+func CheckMsgHasECS(m *dns.Msg) bool {
 	opt := m.IsEdns0()
 	if opt == nil { // no opt, no ecs
 		return false
@@ -46,8 +46,7 @@ func checkMsgHasECS(m *dns.Msg) bool {
 	return false
 }
 
-// applyECS applies ecs to m.
-func applyECS(m *dns.Msg, ecs *dns.EDNS0_SUBNET) *dns.Msg {
+func SetECS(m *dns.Msg, ecs *dns.EDNS0_SUBNET) *dns.Msg {
 	opt := m.IsEdns0()
 	if opt == nil { // no opt, we need a new opt
 		o := new(dns.OPT)
@@ -72,7 +71,7 @@ func applyECS(m *dns.Msg, ecs *dns.EDNS0_SUBNET) *dns.Msg {
 	return m
 }
 
-func newEDNS0SubnetFromStr(s string) (*dns.EDNS0_SUBNET, error) {
+func NewEDNS0SubnetFromStr(s string) (*dns.EDNS0_SUBNET, error) {
 	ipAndMask := strings.SplitN(s, "/", 2)
 	if len(ipAndMask) != 2 {
 		return nil, fmt.Errorf("invalid ECS address [%s], not a CIDR notation", s)

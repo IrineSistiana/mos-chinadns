@@ -22,6 +22,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
 	"io/ioutil"
 	"sync"
 	"time"
@@ -33,36 +35,53 @@ import (
 
 // Dispatcher represents a dns query dispatcher
 type Dispatcher struct {
-	config *Config
+	config *config.Config
 
-	upstreams []upstreamWithName
+	servers         map[string]upstream.Upstream
+	upstreamEntries map[string]*upstreamEntry
+
+	// for faster range operation
+	entriesSlice []*upstreamEntry
 }
 
 // InitDispatcher inits a dispatcher from configuration
-func InitDispatcher(conf *Config) (*Dispatcher, error) {
+func InitDispatcher(c *config.Config) (*Dispatcher, error) {
 	d := new(Dispatcher)
-	d.config = conf
+	d.config = c
 
 	var rootCAs *x509.CertPool
 	var err error
-	if len(conf.CA.Path) != 0 {
-		rootCAs, err = caPath2Pool(conf.CA.Path)
+	if len(c.CA.Path) != 0 {
+		rootCAs, err = caPath2Pool(c.CA.Path)
 		if err != nil {
 			return nil, fmt.Errorf("caPath2Pool: %w", err)
 		}
 		logger.GetStd().Info("initDispatcher: CA cert loaded")
 	}
 
-	if len(conf.Upstream) == 0 {
+	// load server first
+	if len(c.Server) == 0 {
+		return nil, fmt.Errorf("no server")
+	}
+	d.servers = make(map[string]upstream.Upstream)
+	for tag, serverConfig := range c.Server {
+		server, err := upstream.NewUpstreamServer(serverConfig, rootCAs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to init sever %s: %w", tag, err)
+		}
+		d.servers[tag] = server
+	}
+
+	if len(c.Upstream) == 0 {
 		return nil, fmt.Errorf("no upstream")
 	}
-	d.upstreams = make([]upstreamWithName, 0, len(conf.Upstream))
-	for name := range conf.Upstream {
-		u, err := NewUpstream(name, conf.Upstream[name], rootCAs)
+	d.entriesSlice = make([]*upstreamEntry, 0, len(c.Upstream))
+	for name := range c.Upstream {
+		u, err := d.NewEntry(name, c.Upstream[name])
 		if err != nil {
 			return nil, fmt.Errorf("failed to init upstream %s: %w", name, err)
 		}
-		d.upstreams = append(d.upstreams, u)
+		d.entriesSlice = append(d.entriesSlice, u)
 	}
 
 	return d, nil
@@ -81,25 +100,25 @@ var (
 func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 	resChan := make(chan *dns.Msg, 1)
 	upstreamWG := sync.WaitGroup{}
-	for i := range d.upstreams {
-		u := d.upstreams[i]
+	for i := range d.entriesSlice {
+		entry := d.entriesSlice[i]
 
 		upstreamWG.Add(1)
 		go func() {
 			defer upstreamWG.Done()
 
 			queryStart := time.Now()
-			r, err := u.Exchange(ctx, q)
+			r, err := entry.Exchange(ctx, q)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
-					logger.GetStd().Warnf("dispatch: [%v %d]: upstream %s err after %dms: %v,", q.Question, q.Id, u.getName(), rtt, err)
+					logger.GetStd().Warnf("dispatch: [%v %d]: upstream %s err after %dms: %v,", q.Question, q.Id, entry.name, rtt, err)
 				}
 				return
 			}
 
 			if r != nil {
-				logger.GetStd().Debugf("dispatch: [%v %d]: reply from upstream %s accepted, rtt: %dms", q.Question, q.Id, u.getName(), rtt)
+				logger.GetStd().Debugf("dispatch: [%v %d]: reply from upstream %s accepted, rtt: %dms", q.Question, q.Id, entry.name, rtt)
 				select {
 				case resChan <- r:
 				default:

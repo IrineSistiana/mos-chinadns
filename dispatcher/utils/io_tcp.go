@@ -20,14 +20,9 @@ package utils
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 	"io"
-	"net"
-)
-
-const (
-	IPv4UdpMaxPayload = 1500 - 20 - 8 // MTU 1500 - 20 IPv4 header - 8 udp header
 )
 
 // ReadMsgFromTCP reads msg from a tcp connection.
@@ -50,8 +45,8 @@ func ReadMsgFromTCP(c io.Reader) (m *dns.Msg, n int, err error) {
 		return nil, n, dns.ErrShortRead
 	}
 
-	buf := pool.GetMsgBuf(int(length))
-	defer pool.ReleaseMsgBuf(buf)
+	buf := bufpool.GetMsgBuf(int(length))
+	defer bufpool.ReleaseMsgBuf(buf)
 
 	n2, err := io.ReadFull(c, buf)
 	n = n + n2
@@ -70,7 +65,13 @@ func ReadMsgFromTCP(c io.Reader) (m *dns.Msg, n int, err error) {
 // WriteMsgToTCP writes m to c.
 // n represents how many bytes are wrote to c. This includes 2 bytes tcp length header.
 func WriteMsgToTCP(c io.Writer, m *dns.Msg) (n int, err error) {
-	return writeMsgToWriter(c, m, true)
+	mRaw, buf, err := packMsgWithBuffer(m)
+	if err != nil {
+		return 0, err
+	}
+	defer bufpool.ReleaseMsgBuf(buf)
+
+	return WriteRawMsgToTCP(c, mRaw)
 }
 
 // WriteRawMsgToTCP writes b to c.
@@ -98,91 +99,4 @@ func WriteRawMsgToTCP(c io.Writer, b []byte) (n int, err error) {
 		return n, err
 	}
 	return
-}
-
-func ReadUDPMsgFrom(c net.PacketConn, bufSize int) (m *dns.Msg, from net.Addr, n int, err error) {
-	buf := pool.GetMsgBuf(bufSize)
-	defer pool.ReleaseMsgBuf(buf)
-
-	n, from, err = c.ReadFrom(buf)
-	if err != nil {
-		return
-	}
-
-	if n < 12 {
-		err = dns.ErrShortRead
-		return
-	}
-
-	m = new(dns.Msg)
-	err = m.Unpack(buf[:n])
-	if err != nil {
-		return
-	}
-	return
-}
-
-func ReadMsgFromUDP(c io.Reader, bufSize int) (m *dns.Msg, n int, err error) {
-	buf := pool.GetMsgBuf(bufSize)
-	defer pool.ReleaseMsgBuf(buf)
-
-	n, err = c.Read(buf)
-	if err != nil {
-		return nil, n, err
-	}
-	if n < 12 {
-		return nil, n, dns.ErrShortRead
-	}
-
-	m = new(dns.Msg)
-	err = m.Unpack(buf[:n])
-	if err != nil {
-		return nil, n, err
-	}
-	return m, n, nil
-}
-
-func WriteMsgToUDP(c io.Writer, m *dns.Msg) (n int, err error) {
-	return writeMsgToWriter(c, m, false)
-}
-
-func WriteRawMsgToUDP(c io.Writer, b []byte) (n int, err error) {
-	return c.Write(b)
-}
-
-func WriteUDPMsgTo(m *dns.Msg, c net.PacketConn, to net.Addr) (n int, err error) {
-	l := m.Len()
-	if l > dns.MaxMsgSize {
-		return 0, fmt.Errorf("msg length %d is greater than dns max msg size", l)
-	}
-
-	buf := pool.GetMsgBuf(l)
-	defer pool.ReleaseMsgBuf(buf)
-
-	mRaw, err := m.PackBuffer(buf)
-	if err != nil {
-		return 0, err
-	}
-
-	return c.WriteTo(mRaw, to)
-}
-
-func writeMsgToWriter(c io.Writer, m *dns.Msg, withLengthHeader bool) (n int, err error) {
-	l := m.Len()
-	if l > dns.MaxMsgSize {
-		return 0, fmt.Errorf("msg length %d is greater than dns max msg size", l)
-	}
-
-	buf := pool.GetMsgBuf(l)
-	defer pool.ReleaseMsgBuf(buf)
-
-	mRaw, err := m.PackBuffer(buf)
-	if err != nil {
-		return 0, err
-	}
-
-	if withLengthHeader {
-		return WriteRawMsgToTCP(c, mRaw)
-	}
-	return WriteRawMsgToUDP(c, mRaw)
 }

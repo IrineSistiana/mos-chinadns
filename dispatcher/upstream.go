@@ -19,208 +19,227 @@ package dispatcher
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
-	"net"
-	"sync"
-	"time"
-
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
-	"golang.org/x/sync/singleflight"
-
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/pool"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
 	"github.com/miekg/dns"
-	"golang.org/x/net/proxy"
+	"net"
 )
 
-type upstreamWithName interface {
-	upstream.Upstream
-	getName() string
-}
-
-// enhancedUpstream represents a mos-chinadns upstream.
-type enhancedUpstream struct {
+// upstreamEntry represents a mos-chinadns upstream.
+type upstreamEntry struct {
 	name string
 
-	edns0 struct {
-		clientSubnet *dns.EDNS0_SUBNET
-		overwriteECS bool
-	}
 	policies struct {
-		ip     *ipPolicies
-		domain *domainPolicies
-
-		denyErrorRcode       bool
-		denyUnhandlableTypes bool
-		denyEmptyIPReply     bool
-		checkCNAME           bool
+		query struct {
+			unhandlableTypes *action
+			Domain           *domainPolicies
+		}
+		reply struct {
+			errorRcode *action
+			cname      *domainPolicies
+			withoutIP  *action
+			ip         *ipPolicies
+		}
 	}
 
-	deduplicate bool
+	backend upstream.Upstream
+}
 
-	basicUpstream upstream.Upstream
+// NewEntry inits a upstream instance base on the config.
+// rootCAs will be used in dot/doh upstream in tls server verification.
+func (d *Dispatcher) NewEntry(name string, uc *config.UpstreamEntryConfig) (*upstreamEntry, error) {
+	if uc == nil {
+		return nil, errors.New("no server config")
+	}
 
-	bk                *bucket
-	singleFlightGroup singleflight.Group
+	entry := new(upstreamEntry)
+	entry.name = name
+
+	backend, ok := d.servers[uc.ServerTag]
+	if !ok {
+		return nil, fmt.Errorf("can not find server with tag [%s]", uc.ServerTag)
+	}
+	entry.backend = backend
+
+	// load policies
+	if len(uc.Policies.Query.UnhandlableTypes) != 0 {
+		action, err := d.newAction(uc.Policies.Query.UnhandlableTypes)
+		if err != nil {
+			return nil, fmt.Errorf("invalid unhandlable types action [%s]: %v", uc.Policies.Query.UnhandlableTypes, err)
+		}
+		entry.policies.query.unhandlableTypes = action
+	}
+
+	if len(uc.Policies.Query.Domain) != 0 {
+		p, err := d.newDomainPolicies(uc.Policies.Query.Domain, false)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load domain policies, %w", err)
+		}
+		entry.policies.query.Domain = p
+	}
+
+	if len(uc.Policies.Reply.ErrorRcode) != 0 {
+		action, err := d.newAction(uc.Policies.Reply.ErrorRcode)
+		if err != nil {
+			return nil, fmt.Errorf("invalid err rcode action [%s]: %v", uc.Policies.Reply.ErrorRcode, err)
+		}
+		entry.policies.reply.errorRcode = action
+	}
+
+	if len(uc.Policies.Reply.CNAME) != 0 {
+		p, err := d.newDomainPolicies(uc.Policies.Reply.CNAME, true)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load cname policies, %v", err)
+		}
+		entry.policies.reply.cname = p
+	}
+
+	if len(uc.Policies.Reply.WithoutIP) != 0 {
+		action, err := d.newAction(uc.Policies.Reply.WithoutIP)
+		if err != nil {
+			return nil, fmt.Errorf("invalid without ip action [%s]: %v", uc.Policies.Reply.WithoutIP, err)
+		}
+		entry.policies.reply.withoutIP = action
+	}
+
+	if len(uc.Policies.Reply.IP) != 0 {
+		p, err := d.newIPPolicies(uc.Policies.Reply.IP)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load ip policies, %v", err)
+		}
+		entry.policies.reply.ip = p
+	}
+
+	return entry, nil
 }
 
 func isUnhandlableType(q *dns.Msg) bool {
 	return q.Opcode != dns.OpcodeQuery || len(q.Question) != 1 || q.Question[0].Qclass != dns.ClassINET || (q.Question[0].Qtype != dns.TypeA && q.Question[0].Qtype != dns.TypeAAAA)
 }
 
-var (
-	errTooManyConcurrentQueries = errors.New("too many concurrent queries")
-)
-
-func (u *enhancedUpstream) getName() string {
-	return u.name
-}
-
-func (u *enhancedUpstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	// deduplicate
-	if u.deduplicate {
-		key, err := getMsgKey(q)
-		if err != nil {
-			return nil, fmt.Errorf("failed to caculate msg key, %v", err)
-		}
-
-		v, err, shared := u.singleFlightGroup.Do(key, func() (interface{}, error) {
-			defer u.singleFlightGroup.Forget(key)
-			return u.exchange(ctx, q)
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		rUnsafe := v.(*dns.Msg)
-
-		if rUnsafe == nil {
-			return nil, nil
-		}
-
-		if shared { // shared reply may has different id and is not safe to modify.
-			logger.GetStd().Debugf("upstream %s: [%v %d]: duplicate query, relay shared", u.name, q.Question, q.Id)
-			r = rUnsafe.Copy()
-			r.Id = q.Id
-			return r, nil
-		}
-
-		return rUnsafe, nil
-	}
-
+func (u *upstreamEntry) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 	return u.exchange(ctx, q)
 }
 
-func (u *enhancedUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	// get token
-	if u.bk != nil {
-		if u.bk.acquire() == false {
-			return nil, errTooManyConcurrentQueries
-		}
-		defer u.bk.release()
-	}
+func (u *upstreamEntry) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 
+	// check query
 	// check msg type
 	if isUnhandlableType(q) {
-		if u.policies.denyUnhandlableTypes {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: query denied, query is unhandlable type", u.name, q.Question, q.Id)
-			return nil, nil
-		} else {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: query accepted, query is unhandlable type", u.name, q.Question, q.Id)
-			return u.basicUpstream.Exchange(ctx, q)
+		if action := u.policies.query.unhandlableTypes; action != nil {
+			logger.GetStd().Debugf("upstream %s: [%v %d]: query is unhandlable type, action [%s]", u.name, q.Question, q.Id, action.mode)
+			switch action.mode {
+			case policyActionAccept:
+				return u.backend.Exchange(ctx, q)
+			case policyActionDeny:
+				return nil, nil
+			case policyActionRedirect:
+				return action.redirect.Exchange(ctx, q)
+			default:
+				return nil, fmt.Errorf("unexpected unhandlableTypes action [%s]", action.mode)
+			}
 		}
 	}
 
 	// check domain
-	var domainPolicyAction = policyFinalActionOnHold
-	if u.policies.domain != nil {
-		domainPolicyAction = u.policies.domain.check(q.Question[0].Name)
-		if domainPolicyAction == policyFinalActionDeny {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: query denied, matched my domain", u.name, q.Question, q.Id)
-			return nil, nil
-		}
-	}
-
-	// append edns0 client subnet
-	if u.edns0.clientSubnet != nil {
-		if checkMsgHasECS(q) == false || u.edns0.overwriteECS {
-			q = q.Copy()
-			applyECS(q, u.edns0.clientSubnet)
+	if u.policies.query.Domain != nil {
+		if action := u.policies.query.Domain.check(q.Question[0].Name); action != nil {
+			logger.GetStd().Debugf("upstream %s: [%v %d]: query is matched by domain, action [%s]", u.name, q.Question, q.Id, action.mode)
+			switch action.mode {
+			case policyActionAccept:
+				return u.backend.Exchange(ctx, q)
+			case policyActionDeny:
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected domain action [%s]", action.mode)
+			}
 		}
 	}
 
 	// send to upstream
-	r, err = u.basicUpstream.Exchange(ctx, q)
+	r, err = u.backend.Exchange(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 
-	// this reply should be accepted right away, skip other checks.
-	if domainPolicyAction == policyFinalActionAccept {
-		return r, nil
-	}
-
+	// check reply
 	// check Rcode
-	if u.policies.denyErrorRcode && r.Rcode != dns.RcodeSuccess {
-		logger.GetStd().Debugf("upstream %s: [%v %d]: reply denied, rcode is %d", u.name, q.Question, q.Id, r.Rcode)
-		return nil, nil
+	if r.Rcode != dns.RcodeSuccess {
+		if action := u.policies.reply.errorRcode; action != nil {
+			logger.GetStd().Debugf("upstream %s: [%v %d]: reply has a error rcode, action [%s]", u.name, q.Question, q.Id, action.mode)
+			switch action.mode {
+			case policyActionAccept:
+				return r, nil
+			case policyActionDeny:
+				return nil, nil
+			case policyActionRedirect:
+				return action.redirect.Exchange(ctx, q)
+			default:
+				return nil, fmt.Errorf("unexpected errorRcode action [%s]", action.mode)
+			}
+		}
 	}
 
 	// check CNAME
-	if u.policies.domain != nil && u.policies.checkCNAME == true {
-		switch checkMsgCNAME(u.policies.domain, r) {
-		case policyFinalActionDeny:
-			logger.GetStd().Debugf("upstream %s: [%v %d]: reply denied, matched by cname", u.name, q.Question, q.Id)
-			return nil, nil
-		case policyFinalActionAccept:
-			logger.GetStd().Debugf("upstream %s: [%v %d]: reply accepted, matched by cname", u.name, q.Question, q.Id)
-			return r, nil
+	if u.policies.reply.cname != nil {
+		if action := checkMsgCNAME(u.policies.reply.cname, r); action != nil {
+			logger.GetStd().Debugf("upstream %s: [%v %d]: reply cname matched, action [%s]", u.name, q.Question, q.Id, action.mode)
+			switch action.mode {
+			case policyActionAccept:
+				return r, nil
+			case policyActionDeny:
+				return nil, nil
+			case policyActionRedirect:
+				return action.redirect.Exchange(ctx, q)
+			default:
+				return nil, fmt.Errorf("unexpected cname action [%s]", action.mode)
+			}
 		}
 	}
 
 	// check ip
-	if u.policies.denyEmptyIPReply && checkMsgHasValidIP(r) == false {
-		logger.GetStd().Debugf("upstream %s: [%v %d]: reply denied, no valid ip", u.name, q.Question, q.Id)
-		return nil, nil
-	}
-	if u.policies.ip != nil {
-		if checkMsgIP(u.policies.ip, r) == policyFinalActionDeny {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: reply denied, matched by ip", u.name, q.Question, q.Id)
-			return nil, nil
+	if checkMsgHasValidIP(r) == false {
+		if action := u.policies.reply.withoutIP; action != nil {
+			logger.GetStd().Debugf("upstream %s: [%v %d]: reply don not has any valid ip, action [%s]", u.name, q.Question, q.Id, action.mode)
+			switch action.mode {
+			case policyActionAccept:
+				return r, nil
+			case policyActionDeny:
+				return nil, nil
+			case policyActionRedirect:
+				return action.redirect.Exchange(ctx, q)
+			default:
+				return nil, fmt.Errorf("unexpected cname action [%s]", action.mode)
+			}
 		}
 	}
 
-	return r, err
-}
-
-func getMsgKey(m *dns.Msg) (string, error) {
-	l := m.Len()
-	if l > dns.MaxMsgSize {
-		return "", fmt.Errorf("m length %d is too large", l)
+	if u.policies.reply.ip != nil {
+		if action := checkMsgIP(u.policies.reply.ip, r); action != nil {
+			logger.GetStd().Debugf("upstream %s: [%v %d]: reply ip matched, action [%s]", u.name, q.Question, q.Id, action.mode)
+			switch action.mode {
+			case policyActionAccept:
+				return r, nil
+			case policyActionDeny:
+				return nil, nil
+			case policyActionRedirect:
+				return action.redirect.Exchange(ctx, q)
+			default:
+				return nil, fmt.Errorf("unexpected ip action [%s]", action.mode)
+			}
+		}
 	}
 
-	buf := pool.GetMsgBuf(l)
-	defer pool.ReleaseMsgBuf(buf)
-
-	mWithZeroID := pool.GetMsg()
-	defer pool.ReleaseMsg(mWithZeroID)
-	*mWithZeroID = *m  // shadow copy
-	mWithZeroID.Id = 0 // change id to 0
-
-	wireMsg, err := mWithZeroID.PackBuffer(buf)
-	if err != nil {
-		return "", err
-	}
-	return string(wireMsg), nil
+	// default accept
+	return r, nil
 }
 
 // checkMsgIP checks m's ip RR in answer section. If ip is a
-func checkMsgIP(p *ipPolicies, m *dns.Msg) policyFinalAction {
+func checkMsgIP(p *ipPolicies, m *dns.Msg) *action {
 	for i := range m.Answer {
 		var ip net.IP
 		switch rr := m.Answer[i].(type) {
@@ -239,30 +258,22 @@ func checkMsgIP(p *ipPolicies, m *dns.Msg) policyFinalAction {
 			ip = ipv6
 		}
 
-		pfa := p.check(netlist.Conv(ip))
-		switch pfa {
-		case policyFinalActionAccept, policyFinalActionDeny:
-			return pfa
-		default: // policyFinalActionOnHold
-			continue
-		}
+		action := p.check(netlist.Conv(ip))
+		return action
 	}
-	return policyFinalActionOnHold
+	return nil
 }
 
-func checkMsgCNAME(p *domainPolicies, m *dns.Msg) policyFinalAction {
+func checkMsgCNAME(p *domainPolicies, m *dns.Msg) *action {
 	for i := range m.Answer {
 		if cname, ok := m.Answer[i].(*dns.CNAME); ok {
-			pfa := p.check(cname.Target)
-			switch pfa {
-			case policyFinalActionAccept, policyFinalActionDeny:
-				return pfa
-			default: // policyFinalActionOnHold
-				continue
+			a := p.check(cname.Target)
+			if a != nil {
+				return a
 			}
 		}
 	}
-	return policyFinalActionOnHold
+	return nil
 }
 
 func checkMsgHasValidIP(m *dns.Msg) bool {
@@ -275,160 +286,4 @@ func checkMsgHasValidIP(m *dns.Msg) bool {
 		}
 	}
 	return false
-}
-
-// NewUpstream inits a upstream instance base on the config.
-// rootCAs will be used in dot/doh upstream in tls server verification.
-func NewUpstream(name string, sc *BasicUpstreamConfig, rootCAs *x509.CertPool) (*enhancedUpstream, error) {
-	if sc == nil {
-		return nil, errors.New("no server config")
-	}
-
-	u := new(enhancedUpstream)
-	u.name = name
-
-	// set MaxConcurrentQueries
-	if sc.MaxConcurrentQueries > 0 {
-		u.bk = newBucket(sc.MaxConcurrentQueries)
-	}
-
-	// load edns0
-	if len(sc.EDNS0.ClientSubnet) != 0 {
-		subnet, err := newEDNS0SubnetFromStr(sc.EDNS0.ClientSubnet)
-		if err != nil {
-			return nil, fmt.Errorf("invaild ecs, %w", err)
-		}
-		u.edns0.clientSubnet = subnet
-	}
-	u.edns0.overwriteECS = sc.EDNS0.OverwriteECS
-
-	// load policies
-	if len(sc.Policies.IP) != 0 {
-		p, err := newIPPolicies(sc.Policies.IP)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load ip policies, %w", err)
-		}
-		u.policies.ip = p
-	}
-	if len(sc.Policies.Domain) != 0 {
-		p, err := newDomainPolicies(sc.Policies.Domain)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load domain policies, %w", err)
-		}
-		u.policies.domain = p
-	}
-	u.policies.checkCNAME = sc.Policies.CheckCNAME
-	u.policies.denyUnhandlableTypes = sc.Policies.DenyUnhandlableTypes
-	u.policies.denyErrorRcode = sc.Policies.DenyErrorRcode
-	u.policies.denyEmptyIPReply = sc.Policies.DenyEmptyIPReply
-
-	u.deduplicate = sc.Deduplicate
-
-	switch sc.Protocol {
-	case "udp", "":
-		u.basicUpstream = upstream.NewUDPUpstream(sc.Addr)
-
-	case "tcp":
-		u.basicUpstream = upstream.NewTCPUpstream(sc.Addr, sc.Socks5, time.Duration(sc.TCP.IdleTimeout)*time.Second)
-
-	case "dot":
-		if len(sc.DoT.ServerName) == 0 {
-			return nil, fmt.Errorf("dot server needs a server name")
-		}
-		tlsConf := &tls.Config{
-			ServerName:         sc.DoT.ServerName,
-			RootCAs:            rootCAs,
-			ClientSessionCache: tls.NewLRUClientSessionCache(64),
-
-			// for test only
-			InsecureSkipVerify: sc.InsecureSkipVerify,
-		}
-
-		u.basicUpstream = upstream.NewDoTUpstream(sc.Addr, sc.Socks5, time.Duration(sc.TCP.IdleTimeout)*time.Second, tlsConf)
-
-	case "doh":
-		if len(sc.DoH.URL) == 0 {
-			return nil, fmt.Errorf("protocol [%s] needs additional argument: url", sc.Protocol)
-		}
-
-		tlsConf := &tls.Config{
-			// don't have to set servername here, net.http will do it itself.
-			RootCAs:            rootCAs,
-			ClientSessionCache: tls.NewLRUClientSessionCache(64),
-
-			// for test only
-			InsecureSkipVerify: sc.InsecureSkipVerify,
-		}
-
-		dialContext, err := getUpstreamDialContextFunc("tcp", sc.Addr, sc.Socks5)
-		if err != nil {
-			return nil, fmt.Errorf("failed to init dialContext: %v", err)
-		}
-
-		u.basicUpstream, err = upstream.NewDoHUpstream(sc.DoH.URL, dialContext, tlsConf)
-		if err != nil {
-			return nil, fmt.Errorf("failed to init DoH: %v", err)
-		}
-
-	default:
-		return nil, fmt.Errorf("unsupport protocol: %s", sc.Protocol)
-	}
-
-	return u, nil
-}
-
-func getUpstreamDialContextFunc(network, dstAddress, sock5Address string) (func(ctx context.Context, _, _ string) (net.Conn, error), error) {
-	if len(sock5Address) != 0 { // proxy through sock5
-		d, err := proxy.SOCKS5(network, sock5Address, nil, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)
-		}
-		contextDialer, ok := d.(proxy.ContextDialer)
-		if !ok {
-			return nil, errors.New("internal err: socks5 dialer is not a proxy.ContextDialer")
-		}
-		return func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return contextDialer.DialContext(ctx, network, dstAddress)
-		}, nil
-	}
-	return func(ctx context.Context, _, _ string) (net.Conn, error) {
-		d := net.Dialer{}
-		return d.DialContext(ctx, network, dstAddress)
-	}, nil
-}
-
-type bucket struct {
-	sync.Mutex
-	i   int
-	max int
-}
-
-func newBucket(max int) *bucket {
-	return &bucket{
-		i:   0,
-		max: max,
-	}
-}
-
-func (b *bucket) acquire() bool {
-	b.Lock()
-	defer b.Unlock()
-
-	if b.i >= b.max {
-		return false
-	}
-
-	b.i++
-	return true
-}
-
-func (b *bucket) release() {
-	b.Lock()
-	defer b.Unlock()
-
-	if b.i < 0 {
-		panic("nagetive num in bucket")
-	}
-
-	b.i--
 }

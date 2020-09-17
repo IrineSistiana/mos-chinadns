@@ -34,9 +34,9 @@ func Test_dispatch(t *testing.T) {
 	u2ip := net.ParseIP("4.3.2.1")
 
 	d := new(Dispatcher)
-	d.upstreams = make([]upstreamWithName, 0)
-	d.upstreams = append(d.upstreams, &fakeUpstream{latency: time.Millisecond * 0, ip: u1ip})
-	d.upstreams = append(d.upstreams, &fakeUpstream{latency: time.Millisecond * 300, ip: u2ip})
+	d.entriesSlice = make([]*upstreamEntry, 0)
+	d.entriesSlice = append(d.entriesSlice, &upstreamEntry{backend: &fakeUpstream{latency: time.Millisecond * 0, ip: u1ip}})
+	d.entriesSlice = append(d.entriesSlice, &upstreamEntry{backend: &fakeUpstream{latency: time.Millisecond * 300, ip: u2ip}})
 
 	r, err := d.dispatch(context.Background(), q)
 	if err != nil {

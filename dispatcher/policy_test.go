@@ -9,12 +9,13 @@ import (
 
 func Test_ipPolicies(t *testing.T) {
 
+	d := new(Dispatcher)
 	// new policies
-	p1, err := newIPPolicies("accept:./testdata/ip.list|deny_all")
+	p1, err := d.newIPPolicies("accept:./testdata/ip.list|deny")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p2, err := newIPPolicies("deny:./testdata/ip.list")
+	p2, err := d.newIPPolicies("deny:./testdata/ip.list|accept")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,21 +24,21 @@ func Test_ipPolicies(t *testing.T) {
 	ipNotInTestList := []string{"1.0.128.1", "2.0.128.2", "12.0.0.255", "13.0.128.85"}
 
 	for _, ip := range ipInTestList {
-		if p1.check(netlist.Conv(net.ParseIP(ip).To16())) != policyFinalActionAccept {
+		if action := p1.check(netlist.Conv(net.ParseIP(ip).To16())); action == nil || action.mode != policyActionAccept {
 			t.Fatalf("ip %s should be accepted", ip)
 		}
 
-		if p2.check(netlist.Conv(net.ParseIP(ip).To16())) != policyFinalActionDeny {
+		if action := p2.check(netlist.Conv(net.ParseIP(ip).To16())); action == nil || action.mode != policyActionDeny {
 			t.Fatalf("ip %s should be denied", ip)
 		}
 	}
 
 	for _, ip := range ipNotInTestList {
-		if p1.check(netlist.Conv(net.ParseIP(ip).To16())) != policyFinalActionDeny {
+		if action := p1.check(netlist.Conv(net.ParseIP(ip).To16())); action == nil || action.mode != policyActionDeny {
 			t.Fatalf("ip %s should be denied", ip)
 		}
 
-		if p2.check(netlist.Conv(net.ParseIP(ip).To16())) != policyFinalActionOnHold {
+		if action := p2.check(netlist.Conv(net.ParseIP(ip).To16())); action == nil || action.mode != policyActionAccept {
 			t.Fatalf("ip %s should be onhold", ip)
 		}
 	}
@@ -45,12 +46,13 @@ func Test_ipPolicies(t *testing.T) {
 
 func Test_domainPolicies(t *testing.T) {
 
+	d := new(Dispatcher)
 	// new policies
-	p1, err := newDomainPolicies("accept:./testdata/domain.list|deny_all")
+	p1, err := d.newDomainPolicies("accept:./testdata/domain.list|deny", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p2, err := newDomainPolicies("deny:./testdata/domain.list")
+	p2, err := d.newDomainPolicies("deny:./testdata/domain.list|accept", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,21 +61,21 @@ func Test_domainPolicies(t *testing.T) {
 	domainNotInTestList := []string{"zz.com", "zz.zz.com", "c.e.com", "cn"}
 
 	for _, domain := range domainInTestList {
-		if p1.check(dns.Fqdn(domain)) != policyFinalActionAccept {
+		if action := p1.check(dns.Fqdn(domain)); action == nil || action.mode != policyActionAccept {
 			t.Fatalf("domain %s should be accepted", domain)
 		}
 
-		if p2.check(dns.Fqdn(domain)) != policyFinalActionDeny {
+		if action := p2.check(dns.Fqdn(domain)); action == nil || action.mode != policyActionDeny {
 			t.Fatalf("domain %s should be denied", domain)
 		}
 	}
 
 	for _, domain := range domainNotInTestList {
-		if p1.check(dns.Fqdn(domain)) != policyFinalActionDeny {
+		if action := p1.check(dns.Fqdn(domain)); action == nil || action.mode != policyActionDeny {
 			t.Fatalf("domain %s should be denied", domain)
 		}
 
-		if p2.check(dns.Fqdn(domain)) != policyFinalActionOnHold {
+		if action := p2.check(dns.Fqdn(domain)); action == nil || action.mode != policyActionAccept {
 			t.Fatalf("domain %s should be onhold", domain)
 		}
 	}

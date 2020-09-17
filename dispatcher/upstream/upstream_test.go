@@ -96,6 +96,13 @@ func Test_dot_upstream(t *testing.T) {
 //
 //}
 
+func Test_getUpstreamDialContextFunc(t *testing.T) {
+	_, err := getUpstreamDialContextFunc("tcp", "127.0.0.1:1081", "127.0.0.1:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func testUpstream(u Upstream) error {
 	wg := sync.WaitGroup{}
 	errs := make([]error, 0)

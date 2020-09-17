@@ -19,6 +19,7 @@ package dispatcher
 
 import (
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
 	"strings"
 	"sync"
 
@@ -27,176 +28,180 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type policyAction uint8
-type policyFinalAction uint8
+type actionMode uint8
 
 const (
-	policyActionAcceptStr  string = "accept"
-	policyActionDenyStr    string = "deny"
-	policyActionDenyAllStr string = "deny_all"
+	policyActionAcceptStr      string = "accept"
+	policyActionDenyStr        string = "deny"
+	policyActionRedirectPrefix string = "redirect"
 
-	policyActionAccept policyAction = iota
+	policyActionAccept actionMode = iota
 	policyActionDeny
-	policyActionDenyAll
-
-	policyFinalActionAccept policyFinalAction = iota
-	policyFinalActionDeny
-	policyFinalActionOnHold
+	policyActionRedirect
 )
 
-func (pa policyAction) toPFA() policyFinalAction {
-	switch pa {
-	case policyActionAccept:
-		return policyFinalActionAccept
-	case policyActionDeny, policyActionDenyAll:
-		return policyFinalActionDeny
-	default:
-		panic("unknown policyAction")
+var actionModeToStr = map[actionMode]string{
+	policyActionAccept:   policyActionAcceptStr,
+	policyActionDeny:     policyActionDenyStr,
+	policyActionRedirect: policyActionRedirectPrefix,
+}
+
+func (m actionMode) String() string {
+	s, ok := actionModeToStr[m]
+	if ok {
+		return s
 	}
+	return fmt.Sprintf("unknown action mode %d", m)
 }
 
-var convPolicyStringToAction = map[string]policyAction{
-	policyActionAcceptStr:  policyActionAccept,
-	policyActionDenyStr:    policyActionDeny,
-	policyActionDenyAllStr: policyActionDenyAll,
+type action struct {
+	mode     actionMode
+	redirect upstream.Upstream
 }
 
-type rawPolicies struct {
-	policies []rawPolicy
-}
+// newAction accepts policyActionAcceptStr, policyActionDenyStr
+// and string with prefix policyActionRedirectStr.
+func (d *Dispatcher) newAction(s string) (*action, error) {
+	var mode actionMode
+	var redirect upstream.Upstream
+	var ok bool
+	switch {
+	case s == policyActionAcceptStr:
+		mode = policyActionAccept
+	case s == policyActionDenyStr:
+		mode = policyActionDeny
+	case strings.HasPrefix(s, policyActionRedirectPrefix):
+		mode = policyActionRedirect
+		serverTag := strings.TrimLeft(s, policyActionRedirectPrefix+"_")
+		redirect, ok = d.servers[serverTag]
+		if !ok {
+			return nil, fmt.Errorf("unable to redirect, can not find server with tag [%s]", serverTag)
+		}
+	default:
+		return nil, fmt.Errorf("invalid action [%s]", s)
+	}
 
-type rawPolicy struct {
-	action policyAction
-	args   string
+	return &action{mode: mode, redirect: redirect}, nil
 }
 
 type ipPolicies struct {
-	policies []ipPolicy
+	policies      []*ipPolicy
+	defaultAction *action
 }
 
 type ipPolicy struct {
-	action policyAction
 	list   *netlist.List
+	action *action
 }
 
 type domainPolicies struct {
-	policies []domainPolicy
+	policies      []*domainPolicy
+	defaultAction *action
 }
 
 type domainPolicy struct {
-	action policyAction
 	list   *domainlist.List
+	action *action
 }
 
-func convPoliciesStr(s string) (*rawPolicies, error) {
-	rps := new(rawPolicies)
-	rps.policies = make([]rawPolicy, 0)
+func (d *Dispatcher) newIPPolicies(s string) (*ipPolicies, error) {
+	ipps := new(ipPolicies)
+	ipps.policies = make([]*ipPolicy, 0)
 
-	policiesStr := strings.Split(s, "|")
-	for i := range policiesStr {
-		pStr := strings.SplitN(policiesStr[i], ":", 2)
+	ss := strings.Split(s, "|")
+	for i := range ss {
+		ipp := new(ipPolicy)
 
-		p := rawPolicy{}
-		action, ok := convPolicyStringToAction[pStr[0]]
-		if !ok {
-			return nil, fmt.Errorf("unknown action [%s]", pStr[0])
+		tmp := strings.SplitN(ss[i], ":", 2)
+
+		actionStr := tmp[0]
+		action, err := d.newAction(actionStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ip policy at index %d: %v", i, err)
 		}
-		p.action = action
+		ipp.action = action
 
-		if len(pStr) == 2 {
-			p.args = pStr[1]
-		} else {
-			p.args = ""
-		}
-
-		rps.policies = append(rps.policies, p)
-	}
-
-	return rps, nil
-}
-
-func newIPPolicies(s string) (*ipPolicies, error) {
-	rps, err := convPoliciesStr(s)
-	if err != nil {
-		return nil, fmt.Errorf("invalid ip policies string, %w", err)
-	}
-	ps := &ipPolicies{
-		policies: make([]ipPolicy, 0),
-	}
-
-	for i := range rps.policies {
-		p := ipPolicy{}
-		p.action = rps.policies[i].action
-
-		file := rps.policies[i].args
-		if len(file) != 0 {
-			list, err := loadIPPolicy(file)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load ip file from %s, %w", file, err)
+		if len(tmp) == 2 {
+			file := tmp[1]
+			if len(file) != 0 {
+				list, err := loadIPPolicy(file)
+				if err != nil {
+					return nil, fmt.Errorf("failed to load ip file from %s, %w", file, err)
+				}
+				ipp.list = list
 			}
-			p.list = list
 		}
 
-		ps.policies = append(ps.policies, p)
+		ipps.policies = append(ipps.policies, ipp)
 	}
 
-	return ps, nil
+	return ipps, nil
 }
 
-func (ps *ipPolicies) check(ip netlist.IPv6) policyFinalAction {
-	for p := range ps.policies {
-		if ps.policies[p].action == policyActionDenyAll {
-			return policyFinalActionDeny
+func (ps *ipPolicies) check(ip netlist.IPv6) *action {
+	for i := range ps.policies {
+		if ps.policies[i].list == nil { // nil list means match-all
+			return ps.policies[i].action
 		}
 
-		if ps.policies[p].list != nil && ps.policies[p].list.Contains(ip) {
-			return ps.policies[p].action.toPFA()
+		if ps.policies[i].list.Contains(ip) {
+			return ps.policies[i].action
 		}
 	}
 
-	return policyFinalActionOnHold
+	return nil
 }
 
-func newDomainPolicies(s string) (*domainPolicies, error) {
-	rps, err := convPoliciesStr(s)
-	if err != nil {
-		return nil, fmt.Errorf("invalid domain policies string, %w", err)
-	}
-	ps := &domainPolicies{
-		policies: make([]domainPolicy, 0),
-	}
+func (d *Dispatcher) newDomainPolicies(s string, allowRedirect bool) (*domainPolicies, error) {
+	dps := new(domainPolicies)
+	dps.policies = make([]*domainPolicy, 0)
 
-	for i := range rps.policies {
-		p := domainPolicy{}
-		p.action = rps.policies[i].action
+	ss := strings.Split(s, "|")
+	for i := range ss {
+		dp := new(domainPolicy)
 
-		file := rps.policies[i].args
-		if len(file) != 0 {
-			list, err := loadDomainPolicy(file)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load domain file from %s, %w", file, err)
+		tmp := strings.SplitN(ss[i], ":", 2)
+
+		actionStr := tmp[0]
+		action, err := d.newAction(actionStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid domain policy at index %d: %v", i, err)
+		}
+		if !allowRedirect && action.mode == policyActionRedirect {
+			return nil, fmt.Errorf("invalid domain policy at index %d: redirect mode is not allowed here", i)
+		}
+
+		dp.action = action
+
+		if len(tmp) == 2 {
+			file := tmp[1]
+			if len(file) != 0 {
+				list, err := loadDomainPolicy(file)
+				if err != nil {
+					return nil, fmt.Errorf("failed to load domain file from %s, %w", file, err)
+				}
+				dp.list = list
 			}
-			p.list = list
 		}
 
-		ps.policies = append(ps.policies, p)
+		dps.policies = append(dps.policies, dp)
 	}
 
-	return ps, nil
+	return dps, nil
 }
 
-func (ps *domainPolicies) check(fqdn string) policyFinalAction {
-	for p := range ps.policies {
-		if ps.policies[p].action == policyActionDenyAll {
-			return policyFinalActionDeny
+func (ps *domainPolicies) check(fqdn string) *action {
+	for i := range ps.policies {
+		if ps.policies[i].list == nil {
+			return ps.policies[i].action
 		}
 
-		if ps.policies[p].list != nil && ps.policies[p].list.Has(fqdn) {
-			return ps.policies[p].action.toPFA()
+		if ps.policies[i].list != nil && ps.policies[i].list.Has(fqdn) {
+			return ps.policies[i].action
 		}
 	}
 
-	return policyFinalActionOnHold
+	return nil
 }
 
 type policyCache struct {
