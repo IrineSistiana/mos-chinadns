@@ -77,7 +77,7 @@ func InitDispatcher(c *config.Config) (*Dispatcher, error) {
 	}
 	d.entriesSlice = make([]*upstreamEntry, 0, len(c.Upstream))
 	for name := range c.Upstream {
-		u, err := d.NewEntry(name, c.Upstream[name])
+		u, err := d.newEntry(name, c.Upstream[name])
 		if err != nil {
 			return nil, fmt.Errorf("failed to init upstream %s: %w", name, err)
 		}

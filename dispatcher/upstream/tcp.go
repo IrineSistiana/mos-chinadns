@@ -84,30 +84,9 @@ func (u *tcpUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err
 exchangeViaNewConn:
 
 	// dial new conn
-	var c net.Conn
-	if len(u.socks5) != 0 {
-		c, err = dialTCP("tcp", u.addr, u.socks5, dialTCPTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("failed to dial socks5 connection: %v", err)
-		}
-	} else {
-		d := net.Dialer{Timeout: dialTCPTimeout}
-		c, err = d.Dial("tcp", u.addr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to dial connection: %v", err)
-		}
-	}
-
-	if u.isTLS {
-		tlsConn := tls.Client(c, u.tlsConf)
-		tlsConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
-		// handshake now
-		if err := tlsConn.Handshake(); err != nil {
-			tlsConn.Close()
-			return nil, fmt.Errorf("tls handshake failed: %v", err)
-		}
-		tlsConn.SetDeadline(time.Time{})
-		c = tlsConn
+	c, err := u.dial()
+	if err != nil {
+		return nil, err
 	}
 
 	// dialing a new connection might take some time, check if ctx is done
@@ -142,7 +121,39 @@ func (u *tcpUpstream) exchangeViaTCPConn(q *dns.Msg, c net.Conn) (r *dns.Msg, er
 	return r, nil
 }
 
-func dialTCP(network, addr, socks5 string, timeout time.Duration) (c net.Conn, err error) {
+func (u *tcpUpstream) dial() (conn net.Conn, err error) {
+
+	// dial tcp connection
+	if len(u.socks5) != 0 {
+		conn, err = dialTCPViaSocks5("tcp", u.addr, u.socks5, dialTCPTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial socks5 connection: %v", err)
+		}
+	} else {
+		d := net.Dialer{Timeout: dialTCPTimeout}
+		conn, err = d.Dial("tcp", u.addr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial tcp connection: %v", err)
+		}
+	}
+
+	// upgrade to tls
+	if u.isTLS {
+		tlsConn := tls.Client(conn, u.tlsConf)
+		tlsConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
+		// handshake now
+		if err := tlsConn.Handshake(); err != nil {
+			tlsConn.Close()
+			return nil, fmt.Errorf("tls handshake failed: %v", err)
+		}
+		tlsConn.SetDeadline(time.Time{})
+		conn = tlsConn
+	}
+
+	return conn, err
+}
+
+func dialTCPViaSocks5(network, addr, socks5 string, timeout time.Duration) (c net.Conn, err error) {
 	socks5Dialer, err := proxy.SOCKS5(network, socks5, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)

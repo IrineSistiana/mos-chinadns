@@ -146,11 +146,25 @@ func NewUpstreamServer(c *config.BasicUpstreamConfig, rootCAs *x509.CertPool) (U
 			InsecureSkipVerify: c.InsecureSkipVerify,
 		}
 
-		dialContext, err := getUpstreamDialContextFunc("tcp", c.Addr, c.Socks5)
-		if err != nil {
-			return nil, fmt.Errorf("failed to init dialContext: %v", err)
+		var dialContext func(ctx context.Context, _, _ string) (net.Conn, error)
+		if len(c.Socks5) != 0 {
+			d, err := proxy.SOCKS5("tcp", c.Socks5, nil, nil)
+			if err != nil {
+				return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)
+			}
+			contextDialer := d.(proxy.ContextDialer)
+
+			dialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return contextDialer.DialContext(ctx, "tcp", c.Addr)
+			}
+		} else {
+			dialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+				d := net.Dialer{}
+				return d.DialContext(ctx, "tcp", c.Addr)
+			}
 		}
 
+		var err error
 		backend, err = NewDoHUpstream(c.DoH.URL, dialContext, tlsConf)
 		if err != nil {
 			return nil, fmt.Errorf("failed to init DoH: %v", err)

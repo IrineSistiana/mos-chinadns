@@ -49,9 +49,8 @@ type upstreamEntry struct {
 	backend upstream.Upstream
 }
 
-// NewEntry inits a upstream instance base on the config.
-// rootCAs will be used in dot/doh upstream in tls server verification.
-func (d *Dispatcher) NewEntry(name string, uc *config.UpstreamEntryConfig) (*upstreamEntry, error) {
+// newEntry inits a upstream instance.
+func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*upstreamEntry, error) {
 	if uc == nil {
 		return nil, errors.New("no server config")
 	}
