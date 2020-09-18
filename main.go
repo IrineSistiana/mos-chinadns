@@ -22,7 +22,9 @@ import (
 	"flag"
 	"fmt"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/domainlist"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
 	"net"
 	"os"
 	"os/signal"
@@ -60,8 +62,11 @@ var (
 	probeDoTTimeout = flag.String("probe-dot-timeout", "", "[ip:port] probe dot server's idle timeout")
 	probeTCPTimeout = flag.String("probe-tcp-timeout", "", "[ip:port] probe tcp server's idle timeout")
 
-	//DEBUG ONLY
-	//pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
+	benchIPListFile     = flag.String("bench-ip-list", "", "[path] benchmark ip search using this file")
+	benchDomainListFile = flag.String("bench-domain-list", "", "[path] benchmark domain search using this file")
+
+//DEBUG ONLY
+//pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
 )
 
 func main() {
@@ -87,6 +92,8 @@ func main() {
 	//	}()
 	//}
 
+	// helper function
+
 	// show version
 	if *showVersion {
 		fmt.Printf("%s\n", version)
@@ -109,11 +116,23 @@ func main() {
 		os.Exit(0)
 	}
 
-	// show summary
-	logrus.Infof("main: mos-chinadns ver: %s", version)
-	logrus.Infof("main: arch: %s os: %s", runtime.GOARCH, runtime.GOOS)
+	// bench
+	if len(*benchIPListFile) != 0 {
+		err := benchIPList(*benchIPListFile)
+		if err != nil {
+			logrus.Errorf("bench ip list failed, %v", err)
+		}
+		os.Exit(0)
+	}
+	if len(*benchDomainListFile) != 0 {
+		err := benchDomainList(*benchDomainListFile)
+		if err != nil {
+			logrus.Errorf("bench domain list failed, %v", err)
+		}
+		os.Exit(0)
+	}
 
-	//gen config
+	// generate config
 	if len(*genConfigTo) != 0 {
 		err := config.GenConfig(*genConfigTo)
 		if err != nil {
@@ -123,6 +142,12 @@ func main() {
 		}
 		os.Exit(0)
 	}
+
+	// main program starts here
+
+	// show summary
+	logrus.Infof("main: mos-chinadns ver: %s", version)
+	logrus.Infof("main: arch: %s os: %s", runtime.GOARCH, runtime.GOOS)
 
 	// try to change working dir to os.Executable() or *dir
 	var wd string
@@ -242,5 +267,44 @@ func probTCPTimeout(addr string, isTLS bool) error {
 	}
 
 	logrus.Infof("connection closed by peer after %.2f", time.Since(start).Seconds())
+	return nil
+}
+
+func benchIPList(f string) error {
+	list, err := netlist.NewListFromFile(f, true)
+	if err != nil {
+		return err
+	}
+
+	ipv6 := netlist.Conv(net.IPv4(8, 8, 8, 8).To16())
+
+	start := time.Now()
+
+	var n int = 1e6
+
+	for i := 0; i < n; i++ {
+		list.Contains(ipv6)
+	}
+	timeCost := time.Since(start)
+
+	logrus.Infof("%d ns/op", timeCost.Nanoseconds()/int64(n))
+	return nil
+}
+
+func benchDomainList(f string) error {
+	list, err := domainlist.NewListFormFile(f, true)
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+
+	var n int = 1e6
+
+	for i := 0; i < n; i++ {
+		list.Has("com.")
+	}
+	timeCost := time.Since(start)
+
+	logrus.Infof("%d ns/op", timeCost.Nanoseconds()/int64(n))
 	return nil
 }
