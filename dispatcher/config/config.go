@@ -40,7 +40,7 @@ type Config struct {
 
 // UpstreamEntryConfig is a dns upstream.
 type UpstreamEntryConfig struct {
-	ServerTag string `yaml:"server_tag"`
+	ServerTag string `yaml:"server"`
 	Policies  struct {
 		Query struct {
 			UnhandlableTypes string `yaml:"unhandlable_types"`
