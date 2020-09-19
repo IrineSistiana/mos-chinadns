@@ -40,7 +40,9 @@ type Upstream interface {
 
 type BasicUpstream struct {
 	edns0 struct {
-		clientSubnet *dns.EDNS0_SUBNET
+		clientSubnet struct {
+			ipv4, ipv6 *dns.EDNS0_SUBNET
+		}
 		overwriteECS bool
 	}
 	deduplicate bool
@@ -54,6 +56,10 @@ func (u *BasicUpstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 		return u.exchange(ctx, q)
 	}
 
+	return u.exchangeSingleFlight(ctx, q)
+}
+
+func (u *BasicUpstream) exchangeSingleFlight(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 	key, err := getMsgKey(q)
 	if err != nil {
 		return nil, fmt.Errorf("failed to caculate msg key, %v", err)
@@ -81,10 +87,14 @@ func (u *BasicUpstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 
 func (u *BasicUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 	// try to append edns0 client subnet
-	if u.edns0.clientSubnet != nil {
-		if ecs.CheckMsgHasECS(q) == false || u.edns0.overwriteECS {
+	if ecs.CheckMsgHasECS(q) == false || u.edns0.overwriteECS {
+		switch {
+		case u.edns0.clientSubnet.ipv4 != nil && checkQueryType(q, dns.TypeA):
 			q = q.Copy()
-			ecs.SetECS(q, u.edns0.clientSubnet)
+			ecs.SetECS(q, u.edns0.clientSubnet.ipv4)
+		case u.edns0.clientSubnet.ipv6 != nil && checkQueryType(q, dns.TypeAAAA):
+			q = q.Copy()
+			ecs.SetECS(q, u.edns0.clientSubnet.ipv6)
 		}
 	}
 
@@ -178,12 +188,19 @@ func NewUpstreamServer(c *config.BasicUpstreamConfig, rootCAs *x509.CertPool) (U
 	u.backend = backend
 
 	// load ecs
-	if len(c.EDNS0.ClientSubnet) != 0 {
-		subnet, err := ecs.NewEDNS0SubnetFromStr(c.EDNS0.ClientSubnet)
+	if len(c.EDNS0.ClientSubnet.Ipv4) != 0 {
+		subnet, err := ecs.NewEDNS0SubnetFromStr(c.EDNS0.ClientSubnet.Ipv4)
 		if err != nil {
-			return nil, fmt.Errorf("invaild ecs, %w", err)
+			return nil, fmt.Errorf("invaild ipv4 ecs, %w", err)
 		}
-		u.edns0.clientSubnet = subnet
+		u.edns0.clientSubnet.ipv4 = subnet
+	}
+	if len(c.EDNS0.ClientSubnet.Ipv6) != 0 {
+		subnet, err := ecs.NewEDNS0SubnetFromStr(c.EDNS0.ClientSubnet.Ipv6)
+		if err != nil {
+			return nil, fmt.Errorf("invaild ipv6 ecs, %w", err)
+		}
+		u.edns0.clientSubnet.ipv6 = subnet
 	}
 	u.edns0.overwriteECS = c.EDNS0.OverwriteECS
 

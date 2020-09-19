@@ -63,8 +63,11 @@ type BasicUpstreamConfig struct {
 	Deduplicate bool   `yaml:"deduplicate"`
 
 	EDNS0 struct {
-		ClientSubnet string `yaml:"client_subnet"`
-		OverwriteECS bool   `yaml:"overwrite_ecs"`
+		ClientSubnet struct {
+			Ipv4 string `yaml:"ipv4"`
+			Ipv6 string `yaml:"ipv6"`
+		} `yaml:"client_subnet"`
+		OverwriteECS bool `yaml:"overwrite_ecs"`
 	} `yaml:"edns0"`
 
 	TCP struct {

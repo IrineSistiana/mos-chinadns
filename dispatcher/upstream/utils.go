@@ -19,6 +19,7 @@ package upstream
 
 import (
 	"context"
+	"github.com/miekg/dns"
 )
 
 func contextIsDone(ctx context.Context) bool {
@@ -28,4 +29,11 @@ func contextIsDone(ctx context.Context) bool {
 	default:
 		return false
 	}
+}
+
+func checkQueryType(m *dns.Msg, typ uint16) bool {
+	if len(m.Question) > 0 && m.Question[0].Qtype == typ {
+		return true
+	}
+	return false
 }
