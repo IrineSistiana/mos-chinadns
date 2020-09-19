@@ -129,10 +129,15 @@ server:
 
         # edns0相关设定
         edns0:
-            # 希望发送至该服务器的ECS地址，格式为CIDR。
-            # e.g. "1.2.3.0/24"
-            # e.g. "2001:dd8:1a::/48"
-            client_subnet: ""
+
+            # 在转发至该服务器的请求中附加的ECS地址。
+            # 格式为CIDR。e.g. "1.2.3.0/24", "2001:dd8:1a::/48"。
+            # A类型的请求将附加ipv4的地址。AAAA类型的请求将附加ipv6的地址
+            # 其他类别的请求不会附加ECS。
+            # 如果请求中已包含ECS，默认不会复写，除非设置了`overwrite_ecs`。
+            client_subnet:
+                ipv4: ""
+                ipv6: ""
             overwrite_ecs: false # 是否强制改写下游请求已有的ECS。
 
         # TCP设定，仅`protocol`为`tcp`时有用。
@@ -155,7 +160,9 @@ server:
         socks5: ""
         deduplicate: false
         edns0:
-            client_subnet: ""
+            client_subnet:
+                ipv4: ""
+                ipv6: ""
             overwrite_ecs: false
         tcp:
             idle_timeout: 10
