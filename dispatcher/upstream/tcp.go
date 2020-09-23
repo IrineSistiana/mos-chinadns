@@ -72,7 +72,7 @@ func (u *tcpUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err
 		if err != nil {
 			c.Close()
 			if contextIsDone(ctx) == true {
-				return nil, fmt.Errorf("reused connection err: %v, no time to retry: %v", err, ctx.Err())
+				return nil, fmt.Errorf("reused connection err: %w, no time to retry: %w", err, ctx.Err())
 			} else {
 				goto exchangeViaNewConn // we might have time to retry this query on a new connection
 			}
@@ -110,13 +110,13 @@ func (u *tcpUpstream) exchangeViaTCPConn(q *dns.Msg, c net.Conn) (r *dns.Msg, er
 	c.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
 	_, err = utils.WriteMsgToTCP(c, q)
 	if err != nil { // write err typically is a fatal err
-		return nil, fmt.Errorf("failed to write msg: %v", err)
+		return nil, fmt.Errorf("failed to write msg: %w", err)
 	}
 
 	c.SetReadDeadline(time.Now().Add(generalReadTimeout))
 	r, _, err = utils.ReadMsgFromTCP(c)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read msg: %v", err)
+		return nil, fmt.Errorf("failed to read msg: %w", err)
 	}
 	return r, nil
 }
@@ -127,13 +127,13 @@ func (u *tcpUpstream) dial() (conn net.Conn, err error) {
 	if len(u.socks5) != 0 {
 		conn, err = dialTCPViaSocks5("tcp", u.addr, u.socks5, dialTCPTimeout)
 		if err != nil {
-			return nil, fmt.Errorf("failed to dial socks5 connection: %v", err)
+			return nil, fmt.Errorf("failed to dial socks5 connection: %w", err)
 		}
 	} else {
 		d := net.Dialer{Timeout: dialTCPTimeout}
 		conn, err = d.Dial("tcp", u.addr)
 		if err != nil {
-			return nil, fmt.Errorf("failed to dial tcp connection: %v", err)
+			return nil, fmt.Errorf("failed to dial tcp connection: %w", err)
 		}
 	}
 
@@ -144,7 +144,7 @@ func (u *tcpUpstream) dial() (conn net.Conn, err error) {
 		// handshake now
 		if err := tlsConn.Handshake(); err != nil {
 			tlsConn.Close()
-			return nil, fmt.Errorf("tls handshake failed: %v", err)
+			return nil, fmt.Errorf("tls handshake failed: %w", err)
 		}
 		tlsConn.SetDeadline(time.Time{})
 		conn = tlsConn
@@ -156,7 +156,7 @@ func (u *tcpUpstream) dial() (conn net.Conn, err error) {
 func dialTCPViaSocks5(network, addr, socks5 string, timeout time.Duration) (c net.Conn, err error) {
 	socks5Dialer, err := proxy.SOCKS5(network, socks5, nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)
+		return nil, fmt.Errorf("failed to init socks5 dialer: %w", err)
 	}
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), timeout)

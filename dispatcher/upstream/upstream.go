@@ -21,7 +21,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
@@ -62,7 +61,7 @@ func (u *BasicUpstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 func (u *BasicUpstream) exchangeSingleFlight(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
 	key, err := getMsgKey(q)
 	if err != nil {
-		return nil, fmt.Errorf("failed to caculate msg key, %v", err)
+		return nil, fmt.Errorf("failed to caculate msg key, %w", err)
 	}
 
 	v, err, shared := u.sfGroup.Do(key, func() (interface{}, error) {
@@ -160,7 +159,7 @@ func NewUpstreamServer(c *config.BasicUpstreamConfig, rootCAs *x509.CertPool) (U
 		if len(c.Socks5) != 0 {
 			d, err := proxy.SOCKS5("tcp", c.Socks5, nil, nil)
 			if err != nil {
-				return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)
+				return nil, fmt.Errorf("failed to init socks5 dialer: %w", err)
 			}
 			contextDialer := d.(proxy.ContextDialer)
 
@@ -177,7 +176,7 @@ func NewUpstreamServer(c *config.BasicUpstreamConfig, rootCAs *x509.CertPool) (U
 		var err error
 		backend, err = NewDoHUpstream(c.DoH.URL, dialContext, tlsConf)
 		if err != nil {
-			return nil, fmt.Errorf("failed to init DoH: %v", err)
+			return nil, fmt.Errorf("failed to init DoH: %w", err)
 		}
 
 	default:
@@ -213,12 +212,9 @@ func getUpstreamDialContextFunc(network, dstAddress, sock5Address string) (func(
 	if len(sock5Address) != 0 { // proxy through sock5
 		d, err := proxy.SOCKS5(network, sock5Address, nil, nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed to init socks5 dialer: %v", err)
+			return nil, fmt.Errorf("failed to init socks5 dialer: %w", err)
 		}
-		contextDialer, ok := d.(proxy.ContextDialer)
-		if !ok {
-			return nil, errors.New("internal err: socks5 dialer is not a proxy.ContextDialer")
-		}
+		contextDialer := d.(proxy.ContextDialer)
 		return func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return contextDialer.DialContext(ctx, network, dstAddress)
 		}, nil

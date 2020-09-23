@@ -97,7 +97,7 @@ func (d *Dispatcher) StartServer() error {
 
 	listenerErr := <-errChan
 
-	return fmt.Errorf("server listener failed and exited: %v", listenerErr)
+	return fmt.Errorf("server listener failed and exited: %w", listenerErr)
 }
 
 // listenAndServeTCP start a tcp server at given l. Will always return non-nil err.
@@ -170,7 +170,7 @@ func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
 					time.Sleep(time.Millisecond * 100)
 					continue
 				} else {
-					return fmt.Errorf("listenAndServeUDP: unexpected listener err: %v", err)
+					return fmt.Errorf("listenAndServeUDP: unexpected listener err: %w", err)
 				}
 			} else { // invalid msg
 				continue

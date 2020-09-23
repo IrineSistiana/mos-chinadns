@@ -117,7 +117,7 @@ func (d *Dispatcher) newIPPolicies(s string) (*ipPolicies, error) {
 		actionStr := tmp[0]
 		action, err := d.newAction(actionStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid ip policy at index %d: %v", i, err)
+			return nil, fmt.Errorf("invalid ip policy at index %d: %w", i, err)
 		}
 		ipp.action = action
 
@@ -165,7 +165,7 @@ func (d *Dispatcher) newDomainPolicies(s string, allowRedirect bool) (*domainPol
 		actionStr := tmp[0]
 		action, err := d.newAction(actionStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid domain policy at index %d: %v", i, err)
+			return nil, fmt.Errorf("invalid domain policy at index %d: %w", i, err)
 		}
 		if !allowRedirect && action.mode == policyActionRedirect {
 			return nil, fmt.Errorf("invalid domain policy at index %d: redirect mode is not allowed here", i)

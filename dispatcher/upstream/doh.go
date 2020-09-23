@@ -88,12 +88,12 @@ func (u *upstreamDoH) Exchange(_ context.Context, q *dns.Msg) (r *dns.Msg, err e
 
 	buf, err := bufpool.GetMsgBufFor(q)
 	if err != nil {
-		return nil, fmt.Errorf("invalid msg q: %v", err)
+		return nil, fmt.Errorf("invalid msg q: %w", err)
 	}
 
 	rRaw, err := q.PackBuffer(buf)
 	if err != nil {
-		return nil, fmt.Errorf("invalid msg q: %v", err)
+		return nil, fmt.Errorf("invalid msg q: %w", err)
 	}
 
 	// In order to maximize HTTP cache friendliness, DoH clients using media
@@ -158,7 +158,7 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) 
 		defer bufpool.ReleaseMsgBuf(buf)
 		_, err = io.ReadFull(resp.Body, buf)
 		if err != nil {
-			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
+			return nil, fmt.Errorf("unexpected err when read http resp body: %w", err)
 		}
 	case resp.ContentLength >= 0:
 		return nil, fmt.Errorf("content-length %d is smaller than dns header size 12", resp.ContentLength)
@@ -167,7 +167,7 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) 
 		defer releaseDoHReadBuf(bb)
 		n, err := bb.ReadFrom(io.LimitReader(resp.Body, dns.MaxMsgSize+1))
 		if err != nil {
-			return nil, fmt.Errorf("unexpected err when read http resp body: %v", err)
+			return nil, fmt.Errorf("unexpected err when read http resp body: %w", err)
 		}
 
 		if n > dns.MaxMsgSize || n < 12 {
@@ -181,7 +181,7 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) 
 
 	r := new(dns.Msg)
 	if err := r.Unpack(buf); err != nil {
-		return nil, fmt.Errorf("invalid reply: %v", err)
+		return nil, fmt.Errorf("invalid reply: %w", err)
 	}
 	return r, nil
 }

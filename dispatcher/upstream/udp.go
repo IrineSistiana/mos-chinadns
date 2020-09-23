@@ -54,7 +54,7 @@ func (u *udpUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err
 		if err != nil {
 			c.Close()
 			if contextIsDone(ctx) == true {
-				return nil, fmt.Errorf("reused connection err: %v, no time to retry: %v", err, ctx.Err())
+				return nil, fmt.Errorf("reused connection err: %v, no time to retry: %w", err, ctx.Err())
 			} else {
 				goto exchangeViaNewConn // we might have time to retry this query on a new connection
 			}
@@ -67,7 +67,7 @@ exchangeViaNewConn:
 	dialer := net.Dialer{Timeout: dialUDPTimeout}
 	c, err := dialer.Dial("udp", u.addr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial new conntion: %v", err)
+		return nil, fmt.Errorf("failed to dial new conntion: %w", err)
 	}
 
 	// dialing a new connection might take some time, check if ctx is done
@@ -91,14 +91,14 @@ func (u *udpUpstream) exchangeViaUDPConn(q *dns.Msg, c net.Conn) (r *dns.Msg, er
 	c.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
 	_, err = utils.WriteMsgToUDP(c, q)
 	if err != nil { // write err typically is a fatal err
-		return nil, fmt.Errorf("failed to write msg: %v", err)
+		return nil, fmt.Errorf("failed to write msg: %w", err)
 	}
 	c.SetReadDeadline(time.Now().Add(generalReadTimeout))
 
 	for {
 		r, _, err = utils.ReadMsgFromUDP(c, utils.IPv4UdpMaxPayload)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read msg: %v", err)
+			return nil, fmt.Errorf("failed to read msg: %w", err)
 		}
 
 		// id mismatch, ignore it and read again.

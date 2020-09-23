@@ -159,7 +159,7 @@ func generateCertificate() (cert tls.Certificate, err error) {
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 	if err != nil {
-		err = fmt.Errorf("generate serial number: %v", err)
+		err = fmt.Errorf("generate serial number: %w", err)
 		return
 	}
 

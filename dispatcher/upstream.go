@@ -68,7 +68,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	if len(uc.Policies.Query.UnhandlableTypes) != 0 {
 		action, err := d.newAction(uc.Policies.Query.UnhandlableTypes)
 		if err != nil {
-			return nil, fmt.Errorf("invalid unhandlable types action [%s]: %v", uc.Policies.Query.UnhandlableTypes, err)
+			return nil, fmt.Errorf("invalid unhandlable types action [%s]: %w", uc.Policies.Query.UnhandlableTypes, err)
 		}
 		entry.policies.query.unhandlableTypes = action
 	}
@@ -84,7 +84,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	if len(uc.Policies.Reply.ErrorRcode) != 0 {
 		action, err := d.newAction(uc.Policies.Reply.ErrorRcode)
 		if err != nil {
-			return nil, fmt.Errorf("invalid err rcode action [%s]: %v", uc.Policies.Reply.ErrorRcode, err)
+			return nil, fmt.Errorf("invalid err rcode action [%s]: %w", uc.Policies.Reply.ErrorRcode, err)
 		}
 		entry.policies.reply.errorRcode = action
 	}
@@ -92,7 +92,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	if len(uc.Policies.Reply.CNAME) != 0 {
 		p, err := d.newDomainPolicies(uc.Policies.Reply.CNAME, true)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load cname policies, %v", err)
+			return nil, fmt.Errorf("failed to load cname policies, %w", err)
 		}
 		entry.policies.reply.cname = p
 	}
@@ -100,7 +100,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	if len(uc.Policies.Reply.WithoutIP) != 0 {
 		action, err := d.newAction(uc.Policies.Reply.WithoutIP)
 		if err != nil {
-			return nil, fmt.Errorf("invalid without ip action [%s]: %v", uc.Policies.Reply.WithoutIP, err)
+			return nil, fmt.Errorf("invalid without ip action [%s]: %w", uc.Policies.Reply.WithoutIP, err)
 		}
 		entry.policies.reply.withoutIP = action
 	}
@@ -108,7 +108,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	if len(uc.Policies.Reply.IP) != 0 {
 		p, err := d.newIPPolicies(uc.Policies.Reply.IP)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load ip policies, %v", err)
+			return nil, fmt.Errorf("failed to load ip policies, %w", err)
 		}
 		entry.policies.reply.ip = p
 	}
