@@ -26,9 +26,7 @@ import (
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/ecs"
 	"github.com/miekg/dns"
-	"golang.org/x/net/proxy"
 	"golang.org/x/sync/singleflight"
-	"net"
 	"time"
 )
 
@@ -155,26 +153,8 @@ func NewUpstreamServer(c *config.BasicUpstreamConfig, rootCAs *x509.CertPool) (U
 			InsecureSkipVerify: c.InsecureSkipVerify,
 		}
 
-		var dialContext func(ctx context.Context, _, _ string) (net.Conn, error)
-		if len(c.Socks5) != 0 {
-			d, err := proxy.SOCKS5("tcp", c.Socks5, nil, nil)
-			if err != nil {
-				return nil, fmt.Errorf("failed to init socks5 dialer: %w", err)
-			}
-			contextDialer := d.(proxy.ContextDialer)
-
-			dialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return contextDialer.DialContext(ctx, "tcp", c.Addr)
-			}
-		} else {
-			dialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-				d := net.Dialer{}
-				return d.DialContext(ctx, "tcp", c.Addr)
-			}
-		}
-
 		var err error
-		backend, err = NewDoHUpstream(c.DoH.URL, dialContext, tlsConf)
+		backend, err = NewDoHUpstream(c.DoH.URL, c.Addr, c.Socks5, tlsConf)
 		if err != nil {
 			return nil, fmt.Errorf("failed to init DoH: %w", err)
 		}
@@ -206,21 +186,4 @@ func NewUpstreamServer(c *config.BasicUpstreamConfig, rootCAs *x509.CertPool) (U
 	u.deduplicate = c.Deduplicate
 
 	return u, nil
-}
-
-func getUpstreamDialContextFunc(network, dstAddress, sock5Address string) (func(ctx context.Context, _, _ string) (net.Conn, error), error) {
-	if len(sock5Address) != 0 { // proxy through sock5
-		d, err := proxy.SOCKS5(network, sock5Address, nil, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to init socks5 dialer: %w", err)
-		}
-		contextDialer := d.(proxy.ContextDialer)
-		return func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return contextDialer.DialContext(ctx, network, dstAddress)
-		}, nil
-	}
-	return func(ctx context.Context, _, _ string) (net.Conn, error) {
-		d := net.Dialer{}
-		return d.DialContext(ctx, network, dstAddress)
-	}, nil
 }

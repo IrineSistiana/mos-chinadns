@@ -41,7 +41,7 @@ type upstreamDoH struct {
 	client      *http.Client
 }
 
-func NewDoHUpstream(urlEndpoint string, dialContext func(ctx context.Context, network, address string) (net.Conn, error), tlsConfig *tls.Config) (Upstream, error) {
+func NewDoHUpstream(urlEndpoint, addr, socks5 string, tlsConfig *tls.Config) (Upstream, error) {
 	// check urlTemplate
 	u, err := url.ParseRequestURI(urlEndpoint)
 	if err != nil {
@@ -60,16 +60,40 @@ func NewDoHUpstream(urlEndpoint string, dialContext func(ctx context.Context, ne
 		urlEndpoint = urlEndpoint + "&dns=" // the last arg
 	}
 
-	transport := &http.Transport{
-		DialContext:           dialContext,
-		TLSClientConfig:       tlsConfig,
-		TLSHandshakeTimeout:   tlsHandshakeTimeout,
-		IdleConnTimeout:       90 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
+	dialTLS := func(_, _ string, cfg *tls.Config) (c net.Conn, err error) {
+		if len(socks5) != 0 {
+			c, err = dialTCPViaSocks5("tcp", addr, socks5, dialTCPTimeout)
+			if err != nil {
+				return nil, fmt.Errorf("failed to dial socks5 connection: %w", err)
+			}
+		} else {
+			d := net.Dialer{Timeout: dialTCPTimeout}
+			c, err = d.Dial("tcp", addr)
+			if err != nil {
+				return nil, fmt.Errorf("failed to dial tcp connection: %w", err)
+			}
+		}
+
+		tlsConn := tls.Client(c, cfg)
+		tlsConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
+		// handshake now
+		if err := tlsConn.Handshake(); err != nil {
+			tlsConn.Close()
+			return nil, fmt.Errorf("tls handshake failed: %w", err)
+		}
+		tlsConn.SetDeadline(time.Time{})
+		c = tlsConn
+
+		return c, nil
 	}
 
-	http2.ConfigureTransport(transport) // enable http2
+	transport := &http2.Transport{
+		DialTLS:            dialTLS,
+		TLSClientConfig:    tlsConfig,
+		DisableCompression: true,
+		ReadIdleTimeout:    time.Second * 10,
+		PingTimeout:        time.Second * 5,
+	}
 
 	c := new(upstreamDoH)
 	c.urlTemplate = urlEndpoint

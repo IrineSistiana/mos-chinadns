@@ -21,7 +21,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"golang.org/x/net/proxy"
 	"net"
 	"time"
 
@@ -151,19 +150,4 @@ func (u *tcpUpstream) dial() (conn net.Conn, err error) {
 	}
 
 	return conn, err
-}
-
-func dialTCPViaSocks5(network, addr, socks5 string, timeout time.Duration) (c net.Conn, err error) {
-	socks5Dialer, err := proxy.SOCKS5(network, socks5, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to init socks5 dialer: %w", err)
-	}
-
-	dialCtx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	c, err = socks5Dialer.(proxy.ContextDialer).DialContext(dialCtx, network, addr)
-	if err != nil {
-		return nil, err
-	}
-	return c, err
 }
