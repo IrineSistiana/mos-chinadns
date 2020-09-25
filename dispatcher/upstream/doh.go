@@ -96,7 +96,7 @@ func NewDoHUpstream(urlEndpoint, addr, socks5 string, tlsConfig *tls.Config) (Up
 		DialTLS:            dialTLS,
 		TLSClientConfig:    tlsConfig,
 		DisableCompression: true,
-		ReadIdleTimeout:    time.Second * 10,
+		ReadIdleTimeout:    time.Second * 35,
 		PingTimeout:        time.Second * 5,
 	}
 
