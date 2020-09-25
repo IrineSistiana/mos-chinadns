@@ -27,13 +27,16 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
+
+	"golang.org/x/net/http2"
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
-	"golang.org/x/net/http2"
 )
 
 type upstreamDoH struct {
@@ -62,7 +65,9 @@ func NewDoHUpstream(urlEndpoint, addr, socks5 string, tlsConfig *tls.Config) (Up
 
 	dialTLS := func(_, _ string, cfg *tls.Config) (c net.Conn, err error) {
 		if len(socks5) != 0 {
-			c, err = dialTCPViaSocks5("tcp", addr, socks5, dialTCPTimeout)
+			dialCtx, cancel := context.WithTimeout(context.Background(), dialTCPTimeout)
+			defer cancel()
+			c, err = dialTCPViaSocks5(dialCtx, "tcp", addr, socks5)
 			if err != nil {
 				return nil, fmt.Errorf("failed to dial socks5 connection: %w", err)
 			}
@@ -87,7 +92,7 @@ func NewDoHUpstream(urlEndpoint, addr, socks5 string, tlsConfig *tls.Config) (Up
 		return c, nil
 	}
 
-	transport := &http2.Transport{
+	t2 := &http2.Transport{
 		DialTLS:            dialTLS,
 		TLSClientConfig:    tlsConfig,
 		DisableCompression: true,
@@ -95,10 +100,22 @@ func NewDoHUpstream(urlEndpoint, addr, socks5 string, tlsConfig *tls.Config) (Up
 		PingTimeout:        time.Second * 5,
 	}
 
+	// set t1 transport inside t2
+	typ := reflect.TypeOf(t2).Elem() // http2.Transport
+	field, _ := typ.FieldByName("t1")
+	t1 := (**http.Transport)(unsafe.Pointer(uintptr(unsafe.Pointer(t2)) + field.Offset))
+	*t1 = &http.Transport{
+		DisableKeepAlives:     false,
+		DisableCompression:    true,
+		IdleConnTimeout:       time.Second * 55,
+		ResponseHeaderTimeout: time.Second * 5,
+		ExpectContinueTimeout: time.Second * 2,
+	}
+
 	c := new(upstreamDoH)
 	c.urlTemplate = urlEndpoint
 	c.client = &http.Client{
-		Transport: transport,
+		Transport: t2,
 	}
 
 	return c, nil

@@ -28,11 +28,15 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"golang.org/x/net/http2"
 	"math/big"
 	"net"
+	"net/http"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/miekg/dns"
 )
@@ -95,6 +99,29 @@ func Test_dot_upstream(t *testing.T) {
 //func Test_doh_upstream(t *testing.T) {
 //
 //}
+
+func Test_http2_t1_transport(t *testing.T) {
+	t1 := &http.Transport{
+		DisableKeepAlives:     false,
+		DisableCompression:    true,
+		IdleConnTimeout:       time.Second * 55,
+		ResponseHeaderTimeout: time.Second * 5,
+		ExpectContinueTimeout: time.Second * 2,
+	}
+	t2 := &http2.Transport{}
+
+	typ := reflect.TypeOf(t2)
+	field, ok := typ.Elem().FieldByName("t1")
+	if !ok {
+		t.Fatal("hack http2 transport failed, no t1 in http2.Transport")
+	}
+	if field.Type != reflect.TypeOf(t1) {
+		t.Fatalf("hack http2 transport failed, t1 type %v is not %v", field.Type, reflect.TypeOf(t1))
+	}
+
+	hackedT1 := (**http.Transport)(unsafe.Pointer(uintptr(unsafe.Pointer(t2)) + field.Offset))
+	*hackedT1 = t1
+}
 
 func testUpstream(u Upstream) error {
 	wg := sync.WaitGroup{}

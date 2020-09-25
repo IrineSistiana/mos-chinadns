@@ -23,18 +23,15 @@ import (
 	"github.com/miekg/dns"
 	"golang.org/x/net/proxy"
 	"net"
-	"time"
 )
 
-func dialTCPViaSocks5(network, addr, socks5 string, timeout time.Duration) (c net.Conn, err error) {
+func dialTCPViaSocks5(ctx context.Context, network, addr, socks5 string) (c net.Conn, err error) {
 	socks5Dialer, err := proxy.SOCKS5(network, socks5, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init socks5 dialer: %w", err)
 	}
 
-	dialCtx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	c, err = socks5Dialer.(proxy.ContextDialer).DialContext(dialCtx, network, addr)
+	c, err = socks5Dialer.(proxy.ContextDialer).DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}

@@ -83,7 +83,9 @@ func (u *tcpUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err
 exchangeViaNewConn:
 
 	// dial new conn
-	c, err := u.dial()
+	dialCtx, cancel := context.WithTimeout(context.Background(), dialTCPTimeout)
+	defer cancel()
+	c, err := u.dialContext(dialCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -120,17 +122,17 @@ func (u *tcpUpstream) exchangeViaTCPConn(q *dns.Msg, c net.Conn) (r *dns.Msg, er
 	return r, nil
 }
 
-func (u *tcpUpstream) dial() (conn net.Conn, err error) {
+func (u *tcpUpstream) dialContext(ctx context.Context) (conn net.Conn, err error) {
 
 	// dial tcp connection
 	if len(u.socks5) != 0 {
-		conn, err = dialTCPViaSocks5("tcp", u.addr, u.socks5, dialTCPTimeout)
+		conn, err = dialTCPViaSocks5(ctx, "tcp", u.addr, u.socks5)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial socks5 connection: %w", err)
 		}
 	} else {
-		d := net.Dialer{Timeout: dialTCPTimeout}
-		conn, err = d.Dial("tcp", u.addr)
+		d := net.Dialer{}
+		conn, err = d.DialContext(ctx, "tcp", u.addr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial tcp connection: %w", err)
 		}
