@@ -71,7 +71,7 @@ func (u *tcpUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err
 		if err != nil {
 			c.Close()
 			if contextIsDone(ctx) == true {
-				return nil, fmt.Errorf("reused connection err: %w, no time to retry: %w", err, ctx.Err())
+				return nil, fmt.Errorf("reused connection err: %w, no time to retry: %v", err, ctx.Err())
 			} else {
 				goto exchangeViaNewConn // we might have time to retry this query on a new connection
 			}
