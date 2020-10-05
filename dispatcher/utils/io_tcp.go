@@ -20,9 +20,10 @@ package utils
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
+
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
-	"io"
 )
 
 // ReadMsgFromTCP reads msg from a tcp connection.
@@ -94,7 +95,7 @@ func WriteRawMsgToTCP(c io.Writer, b []byte) (n int, err error) {
 	}
 
 	if len(b) > nw { // write remaining data
-		nw, err := c.Write(b[nw:])
+		nw, err := c.Write(b[nc:])
 		n = n + nw
 		return n, err
 	}

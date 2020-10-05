@@ -67,6 +67,9 @@ func Test_readMsgFromTCP(t *testing.T) {
 
 func Test_writeMsgToTCP(t *testing.T) {
 	q := new(dns.Msg).SetQuestion("www.google.com.", dns.TypeA)
+	q.SetEdns0(4096, false)
+	opt := q.IsEdns0()
+	opt.Option = append(opt.Option, &dns.EDNS0_PADDING{Padding: make([]byte, 2048)})
 	bb := new(bytes.Buffer)
 	data, err := q.Pack()
 	if err != nil {
