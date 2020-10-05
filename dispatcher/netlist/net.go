@@ -26,20 +26,14 @@ import (
 )
 
 const (
-	//32 or 64
-	intSize = 32 << (^uint(0) >> 63)
-
-	//IPSize = 2 or 4
-	IPSize = 128 / intSize
-
-	maxUint = ^uint(0)
+	maxUint64 = ^uint64(0)
 )
 
 //IPv6 represents a ipv6 addr
-type IPv6 [IPSize]uint
+type IPv6 [2]uint64
 
 //mask is ipv6 IP network mask
-type mask [IPSize]uint
+type mask [2]uint64
 
 //Net represents a ip network
 type Net struct {
@@ -52,7 +46,7 @@ type Net struct {
 func NewNet(ipv6 IPv6, mask uint) (n Net) {
 	n.ip = ipv6
 	n.mask = cidrMask(mask)
-	for i := 0; i < IPSize; i++ {
+	for i := 0; i < 2; i++ {
 		n.ip[i] &= n.mask[i]
 	}
 	return
@@ -60,7 +54,7 @@ func NewNet(ipv6 IPv6, mask uint) (n Net) {
 
 //Contains reports whether the net includes the ip.
 func (net Net) Contains(ip IPv6) bool {
-	for i := 0; i < IPSize; i++ {
+	for i := 0; i < 2; i++ {
 		if ip[i]&net.mask[i] == net.ip[i] {
 			continue
 		}
@@ -76,17 +70,9 @@ func Conv(ip net.IP) (ipv6 IPv6) {
 		panic("ip is not a 16-byte ipv6")
 	}
 
-	switch intSize {
-	case 32:
-		for i := 0; i < IPSize; i++ { //0 to 3
-			s := i * 4
-			ipv6[i] = uint(binary.BigEndian.Uint32(ip[s : s+4]))
-		}
-	case 64:
-		for i := 0; i < IPSize; i++ { //0 to 1
-			s := i * 8
-			ipv6[i] = uint(binary.BigEndian.Uint64(ip[s : s+8]))
-		}
+	for i := 0; i < 2; i++ { //0 to 1
+		s := i * 8
+		ipv6[i] = uint64(binary.BigEndian.Uint64(ip[s : s+8]))
 	}
 
 	return
@@ -134,15 +120,15 @@ func ParseCIDR(s string) (Net, error) {
 }
 
 func cidrMask(n uint) (m mask) {
-	for i := uint(0); i < IPSize; i++ {
+	for i := uint(0); i < 2; i++ {
 		if n != 0 {
-			m[i] = ^(maxUint >> n)
+			m[i] = ^(maxUint64 >> n)
 		} else {
 			break
 		}
 
-		if n > intSize {
-			n = n - intSize
+		if n > 64 {
+			n = n - 64
 		} else {
 			break
 		}

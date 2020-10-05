@@ -114,7 +114,7 @@ func (list *List) Contains(ipv6 IPv6) bool {
 
 //smallOrEqual IP1 <= IP2 ?
 func smallOrEqual(IP1, IP2 IPv6) bool {
-	for k := 0; k < IPSize; k++ {
+	for k := 0; k < 2; k++ {
 		if IP1[k] == IP2[k] {
 			continue
 		}
