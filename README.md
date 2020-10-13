@@ -14,11 +14,6 @@
 * [miekg/dns](https://github.com/miekg/dns): [LICENSE](https://github.com/miekg/dns/blob/master/LICENSE)
 * [go-yaml/yaml](https://github.com/go-yaml/yaml): [Apache License 2.0](https://github.com/go-yaml/yaml/blob/v2/LICENSE)
 
-资源
-
-* [felixonmars/dnsmasq-china-list](https://github.com/felixonmars/dnsmasq-china-list): [LICENSE](https://github.com/felixonmars/dnsmasq-china-list/blob/master/LICENSE)
-* [APNIC](https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest)
-
 参考
 
 * [ChinaDNS](https://github.com/shadowsocks/ChinaDNS): [GPLv3](https://github.com/shadowsocks/ChinaDNS/blob/master/COPYING)
