@@ -40,9 +40,8 @@ envs = [
 
 def init_release_resources():
     if len(sys.argv) > 1 and '-list' in sys.argv[1:]:
-        from scripts.update_chn_ip_domain import update_domain, update_ip
-        update_domain()
-        update_ip()
+        from scripts.update_chn_ip_domain import update_all
+        update_all()
 
 
 def go_build():
@@ -89,8 +88,9 @@ def go_build():
                 zf.write(bin_filename)
                 zf.write('README.md')
                 zf.write('config.yaml')
-                zf.write('chn.list')
+                zf.write('chn_ip.list')
                 zf.write('chn_domain.list')
+                zf.write('non_chn_domain.list')
                 zf.write('LICENSE')
                 if os_env['GOOS'] == 'windows':
                     zf.write('scripts\windows\mos-chinadns-winsw.xml','mos-chinadns-winsw.xml')

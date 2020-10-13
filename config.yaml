@@ -64,7 +64,7 @@ upstream:
                 #   `deny`: 丢弃请求(不会由本上游解析)。
                 # e.g. "deny:./blacklist.txt" `blacklist.txt`里的域名不会发送至该上游。
                 # e.g. "accept:./whitelist.txt|deny" 只有`whitelist.txt`里的域名才会发送至该上游。
-                domain: "accept:./chn_domain.list"
+                domain: "accept:./chn_domain.list|deny:./non_chn_domain.list"
 
             # 应用于应答的策略
             reply:
@@ -83,7 +83,7 @@ upstream:
                 # 因为是最后的策略，所以如果直到最后都没有命中任何策略，默认处理方式为`接受`。
                 # e.g. "deny:./blacklist.txt"
                 # e.g. "accept:./whitelist.txt|deny" 仅允许`whitelist.txt`里的IP。
-                ip: "accept:./chn.list|deny"
+                ip: "accept:./chn_ip.list|deny"
 
     remote: # 另外一个上游，tag为`remote`。
         server: "google"
