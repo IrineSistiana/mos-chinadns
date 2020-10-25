@@ -5,7 +5,8 @@ import os
 import zipfile
 import logging
 
-project_name = 'mos-chinadns'
+PROJECT_NAME = 'mos-chinadns'
+RELEASE_DIR = './release'
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def init_release_resources():
 
 
 def go_build():
-    logger.info(f'building {project_name}')
+    logger.info(f'building {PROJECT_NAME}')
 
     global envs
     if len(sys.argv) == 2 and sys.argv[1].isdigit():
@@ -61,19 +62,19 @@ def go_build():
     for env in envs:
         os_env = os.environ.copy()  # new env
 
-        s = project_name
+        s = PROJECT_NAME
         for pairs in env:
             os_env[pairs[0]] = pairs[1]  # add env
             s = s + '-' + pairs[1]
         zip_filename = s + '.zip'
 
         suffix = '.exe' if os_env['GOOS'] == 'windows' else ''
-        bin_filename = project_name + suffix
+        bin_filename = PROJECT_NAME + suffix
 
         logger.info(f'building {zip_filename}')
         try:
             subprocess.check_call(
-                f'go build -ldflags "-s -w -X main.version={VERSION}" -trimpath -o {bin_filename}', shell=True,
+                f'go build -ldflags "-s -w -X main.version={VERSION}" -trimpath -o {bin_filename} ../', shell=True,
                 env=os_env)
 
             if len(sys.argv) > 1 and '-upx' in sys.argv[1:]:
@@ -86,15 +87,15 @@ def go_build():
             with zipfile.ZipFile(zip_filename, mode='w', compression=zipfile.ZIP_DEFLATED,
                                  compresslevel=5) as zf:
                 zf.write(bin_filename)
-                zf.write('README.md')
-                zf.write('config.yaml')
+                zf.write('../README.md')
+                zf.write('../config.yaml')
                 zf.write('chn_ip.list')
                 zf.write('chn_domain.list')
                 zf.write('non_chn_domain.list')
-                zf.write('LICENSE')
+                zf.write('../LICENSE')
                 if os_env['GOOS'] == 'windows':
-                    zf.write('scripts\windows\mos-chinadns-winsw.xml','mos-chinadns-winsw.xml')
-                    zf.write('scripts\windows\service_control.bat','service_control.bat')
+                    zf.write('../scripts/windows/mos-chinadns-winsw.xml', 'mos-chinadns-winsw.xml')
+                    zf.write('../scripts/windows/service_control.bat', 'service_control.bat')
 
         except subprocess.CalledProcessError as e:
             logger.error(f'build {zip_filename} failed: {e.args}')
@@ -104,5 +105,9 @@ def go_build():
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
+
+    if not os.path.exists('./release'):
+        os.mkdir('./release')
+    os.chdir('./release')
     init_release_resources()
     go_build()

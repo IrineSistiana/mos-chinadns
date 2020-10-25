@@ -17,6 +17,9 @@
 # china ip and domain list
 chn*.list
 
+# release dir
+release/
+
 # ide
 .vscode/
 .idea/
