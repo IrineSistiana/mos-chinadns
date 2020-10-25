@@ -124,7 +124,7 @@ func (p *Client) newWorker() (*worker, error) {
 	return &worker{
 		pool:              p,
 		conn:              conn,
-		readLoopEventChan: make(chan *dns.Msg),
+		readLoopEventChan: make(chan *dns.Msg, 1),
 	}, nil
 }
 

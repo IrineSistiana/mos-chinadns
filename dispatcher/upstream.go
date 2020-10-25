@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
 	"github.com/miekg/dns"
 	"net"
@@ -250,14 +249,7 @@ func checkMsgIP(p *ipPolicies, m *dns.Msg) *action {
 			continue
 		}
 
-		if ipv6 := ip.To16(); ipv6 == nil {
-			logger.GetStd().Warnf("checkMsgIP: internal err: failed to convert ip %v to ipv6", ip)
-			continue
-		} else {
-			ip = ipv6
-		}
-
-		action := p.check(netlist.Conv(ip))
+		action := p.check(ip)
 		return action
 	}
 	return nil

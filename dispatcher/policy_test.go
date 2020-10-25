@@ -1,7 +1,6 @@
 package dispatcher
 
 import (
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
 	"github.com/miekg/dns"
 	"net"
 	"testing"
@@ -24,21 +23,21 @@ func Test_ipPolicies(t *testing.T) {
 	ipNotInTestList := []string{"1.0.128.1", "2.0.128.2", "12.0.0.255", "13.0.128.85"}
 
 	for _, ip := range ipInTestList {
-		if action := p1.check(netlist.Conv(net.ParseIP(ip).To16())); action == nil || action.mode != policyActionAccept {
+		if action := p1.check(net.ParseIP(ip).To16()); action == nil || action.mode != policyActionAccept {
 			t.Fatalf("ip %s should be accepted", ip)
 		}
 
-		if action := p2.check(netlist.Conv(net.ParseIP(ip).To16())); action == nil || action.mode != policyActionDeny {
+		if action := p2.check(net.ParseIP(ip).To16()); action == nil || action.mode != policyActionDeny {
 			t.Fatalf("ip %s should be denied", ip)
 		}
 	}
 
 	for _, ip := range ipNotInTestList {
-		if action := p1.check(netlist.Conv(net.ParseIP(ip).To16())); action == nil || action.mode != policyActionDeny {
+		if action := p1.check(net.ParseIP(ip).To16()); action == nil || action.mode != policyActionDeny {
 			t.Fatalf("ip %s should be denied", ip)
 		}
 
-		if action := p2.check(netlist.Conv(net.ParseIP(ip).To16())); action == nil || action.mode != policyActionAccept {
+		if action := p2.check(net.ParseIP(ip).To16()); action == nil || action.mode != policyActionAccept {
 			t.Fatalf("ip %s should be onhold", ip)
 		}
 	}

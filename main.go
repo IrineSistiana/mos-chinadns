@@ -21,10 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/domainlist"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher"
 	"net"
 	"os"
 	"os/signal"
@@ -33,6 +30,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 	"github.com/miekg/dns"
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher"
@@ -65,12 +64,11 @@ var (
 	benchIPListFile     = flag.String("bench-ip-list", "", "[path] benchmark ip search using this file")
 	benchDomainListFile = flag.String("bench-domain-list", "", "[path] benchmark domain search using this file")
 
-//DEBUG ONLY
-//pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
+	//DEBUG ONLY
+	//pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
 )
 
 func main() {
-
 	//wait for signals
 	go func() {
 		osSignals := make(chan os.Signal, 1)
@@ -271,19 +269,19 @@ func probTCPTimeout(addr string, isTLS bool) error {
 }
 
 func benchIPList(f string) error {
-	list, err := netlist.NewListFromFile(f, true)
+	list, err := matcher.NewIPMatcherFromFile(f)
 	if err != nil {
 		return err
 	}
 
-	ipv6 := netlist.Conv(net.IPv4(8, 8, 8, 8).To16())
+	ip := net.IPv4(8, 8, 8, 8).To4()
 
 	start := time.Now()
 
 	var n int = 1e6
 
 	for i := 0; i < n; i++ {
-		list.Contains(ipv6)
+		list.Match(ip)
 	}
 	timeCost := time.Since(start)
 
@@ -292,7 +290,7 @@ func benchIPList(f string) error {
 }
 
 func benchDomainList(f string) error {
-	list, err := domainlist.NewListFormFile(f, true)
+	list, err := matcher.NewDomainMatcherFormFile(f)
 	if err != nil {
 		return err
 	}
@@ -301,7 +299,7 @@ func benchDomainList(f string) error {
 	var n int = 1e6
 
 	for i := 0; i < n; i++ {
-		list.Has("com.")
+		list.Match("com.")
 	}
 	timeCost := time.Since(start)
 

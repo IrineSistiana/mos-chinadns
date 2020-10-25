@@ -19,13 +19,12 @@ package dispatcher
 
 import (
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher/domain"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher/netlist"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
+	"net"
 	"strings"
-	"sync"
-
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/domainlist"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/netlist"
-	"github.com/sirupsen/logrus"
 )
 
 type actionMode uint8
@@ -90,8 +89,8 @@ type ipPolicies struct {
 }
 
 type ipPolicy struct {
-	list   *netlist.List
-	action *action
+	matcher netlist.Matcher
+	action  *action
 }
 
 type domainPolicies struct {
@@ -100,8 +99,8 @@ type domainPolicies struct {
 }
 
 type domainPolicy struct {
-	list   *domainlist.List
-	action *action
+	matcher domain.Matcher
+	action  *action
 }
 
 func (d *Dispatcher) newIPPolicies(s string) (*ipPolicies, error) {
@@ -124,11 +123,11 @@ func (d *Dispatcher) newIPPolicies(s string) (*ipPolicies, error) {
 		if len(tmp) == 2 {
 			file := tmp[1]
 			if len(file) != 0 {
-				list, err := loadIPPolicy(file)
+				m, err := matcher.NewIPMatcherFromFile(file)
 				if err != nil {
 					return nil, fmt.Errorf("failed to load ip file from %s, %w", file, err)
 				}
-				ipp.list = list
+				ipp.matcher = m
 			}
 		}
 
@@ -138,13 +137,13 @@ func (d *Dispatcher) newIPPolicies(s string) (*ipPolicies, error) {
 	return ipps, nil
 }
 
-func (ps *ipPolicies) check(ip netlist.IPv6) *action {
+func (ps *ipPolicies) check(ip net.IP) *action {
 	for i := range ps.policies {
-		if ps.policies[i].list == nil { // nil list means match-all
+		if ps.policies[i].matcher == nil { // nil matcher means match-all
 			return ps.policies[i].action
 		}
 
-		if ps.policies[i].list.Contains(ip) {
+		if ps.policies[i].matcher.Match(ip) {
 			return ps.policies[i].action
 		}
 	}
@@ -176,11 +175,11 @@ func (d *Dispatcher) newDomainPolicies(s string, allowRedirect bool) (*domainPol
 		if len(tmp) == 2 {
 			file := tmp[1]
 			if len(file) != 0 {
-				list, err := loadDomainPolicy(file)
+				m, err := matcher.NewDomainMatcherFormFile(file)
 				if err != nil {
 					return nil, fmt.Errorf("failed to load domain file from %s, %w", file, err)
 				}
-				dp.list = list
+				dp.matcher = m
 			}
 		}
 
@@ -192,67 +191,14 @@ func (d *Dispatcher) newDomainPolicies(s string, allowRedirect bool) (*domainPol
 
 func (ps *domainPolicies) check(fqdn string) *action {
 	for i := range ps.policies {
-		if ps.policies[i].list == nil {
+		if ps.policies[i].matcher == nil {
 			return ps.policies[i].action
 		}
 
-		if ps.policies[i].list != nil && ps.policies[i].list.Has(fqdn) {
+		if ps.policies[i].matcher != nil && ps.policies[i].matcher.Match(fqdn) {
 			return ps.policies[i].action
 		}
 	}
 
 	return nil
-}
-
-type policyCache struct {
-	l     sync.Mutex
-	cache map[string]interface{}
-}
-
-var globePolicyCache = policyCache{cache: make(map[string]interface{})}
-
-func loadDomainPolicy(f string) (*domainlist.List, error) {
-	globePolicyCache.l.Lock()
-	defer globePolicyCache.l.Unlock()
-
-	if e, ok := globePolicyCache.cache[f]; ok { // cache hit
-		if list, ok := e.(*domainlist.List); ok {
-			return list, nil // load from cache
-		} else {
-			return nil, fmt.Errorf("%s is loaded but not a domain list", f)
-		}
-	}
-
-	// load from file
-	list, err := domainlist.NewListFormFile(f, true)
-	if err != nil {
-		return nil, err
-	}
-
-	logrus.Infof("loadDomainPolicy: domain list %s loaded, length %d", f, list.Len())
-	globePolicyCache.cache[f] = list // cache the list
-	return list, nil
-}
-
-func loadIPPolicy(f string) (*netlist.List, error) {
-	globePolicyCache.l.Lock()
-	defer globePolicyCache.l.Unlock()
-
-	if e, ok := globePolicyCache.cache[f]; ok { // cache hit
-		if list, ok := e.(*netlist.List); ok {
-			return list, nil // load from cache
-		} else {
-			return nil, fmt.Errorf("%s is loaded but not a ip list", f)
-		}
-	}
-
-	// load from file
-	list, err := netlist.NewListFromFile(f, true)
-	if err != nil {
-		return nil, err
-	}
-
-	logrus.Infof("loadIPPolicy: ip list %s loaded, length %d", f, list.Len())
-	globePolicyCache.cache[f] = list // cache the list
-	return list, nil
 }
