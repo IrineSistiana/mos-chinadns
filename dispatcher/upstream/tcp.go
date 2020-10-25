@@ -24,8 +24,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream/cpool"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream/tcp_client"
 	"github.com/miekg/dns"
 )
 
@@ -35,26 +34,25 @@ type tcpUpstream struct {
 	isTLS        bool
 	tlsConf      *tls.Config
 
-	cp *cpool.Pool
+	cp *tcpClient.Client
 }
 
 func NewTCPUpstream(addr, socks5 string, idleTimeout time.Duration) Upstream {
-	return &tcpUpstream{
-		socks5: socks5,
-		addr:   addr,
-		isTLS:  false,
-		cp:     cpool.New(0xffff, idleTimeout, cpool.PoolCleanerInterval),
-	}
+	return newTCPUpstream(addr, socks5, idleTimeout, false, nil)
 }
 
 func NewDoTUpstream(addr, socks5 string, idleTimeout time.Duration, tlsConfig *tls.Config) Upstream {
-	return &tcpUpstream{
+	return newTCPUpstream(addr, socks5, idleTimeout, true, tlsConfig)
+}
+func newTCPUpstream(addr, socks5 string, idleTimeout time.Duration, isTLS bool, tlsConfig *tls.Config) *tcpUpstream {
+	u := &tcpUpstream{
 		socks5:  socks5,
 		addr:    addr,
-		isTLS:   true,
+		isTLS:   isTLS,
 		tlsConf: tlsConfig,
-		cp:      cpool.New(0xffff, idleTimeout, cpool.PoolCleanerInterval),
 	}
+	u.cp = tcpClient.New(context.Background(), u.dial, generalReadTimeout, generalWriteTimeout, idleTimeout)
+	return u
 }
 
 func (u *tcpUpstream) Exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
@@ -65,61 +63,13 @@ func (u *tcpUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, err
 	if contextIsDone(ctx) == true {
 		return nil, ctx.Err()
 	}
-
-	if c := u.cp.Get(); c != nil {
-		r, err := u.exchangeViaTCPConn(q, c)
-		if err != nil {
-			c.Close()
-			if contextIsDone(ctx) == true {
-				return nil, fmt.Errorf("reused connection err: %w, no time to retry: %v", err, ctx.Err())
-			} else {
-				goto exchangeViaNewConn // we might have time to retry this query on a new connection
-			}
-		}
-		u.cp.Put(c)
-		return r, nil
-	}
-
-exchangeViaNewConn:
-
-	// dial new conn
-	dialCtx, cancel := context.WithTimeout(context.Background(), dialTCPTimeout)
-	defer cancel()
-	c, err := u.dialContext(dialCtx)
-	if err != nil {
-		return nil, err
-	}
-
-	// dialing a new connection might take some time, check if ctx is done
-	if contextIsDone(ctx) == true {
-		u.cp.Put(c)
-		return nil, ctx.Err()
-	}
-
-	r, err = u.exchangeViaTCPConn(q, c)
-	if err != nil {
-		c.Close()
-		return nil, err
-	}
-
-	u.cp.Put(c)
-	return r, nil
+	return u.cp.Query(ctx, q)
 }
 
-func (u *tcpUpstream) exchangeViaTCPConn(q *dns.Msg, c net.Conn) (r *dns.Msg, err error) {
-	// write first
-	c.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
-	_, err = utils.WriteMsgToTCP(c, q)
-	if err != nil { // write err typically is a fatal err
-		return nil, fmt.Errorf("failed to write msg: %w", err)
-	}
-
-	c.SetReadDeadline(time.Now().Add(generalReadTimeout))
-	r, _, err = utils.ReadMsgFromTCP(c)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read msg: %w", err)
-	}
-	return r, nil
+func (u *tcpUpstream) dial() (conn net.Conn, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dialTCPTimeout)
+	defer cancel()
+	return u.dialContext(ctx)
 }
 
 func (u *tcpUpstream) dialContext(ctx context.Context) (conn net.Conn, err error) {
