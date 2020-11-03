@@ -164,6 +164,26 @@ server:
     # 如果还想添加服务器，将上面的设置模板复制一遍。
     # 修改tag名称，保证互相不重复。
 
+# ipset设定 (仅支持Linux系统)
+# mos-chinadns可以将特定域名的IP地址写入ipset表。
+# 表名`set_name4/6`必需提前存在。
+# 表必需为`hash:net`类型。请设置`timeout`属性，并且确保`maxelem`足够大。
+# 请确保mos-chinadns有足有权限。
+# mos-chinadns添加新IP时等于执行了`ipset add <set_name> <IP>/<mask>`
+ipset:
+    check_cname: false  # 域名策略是否检测返回应答的CNAME
+    mask4: 0            # 写入ipv4地址时使用的cidr后缀。0会使用默认值：24。
+    mask6: 0            # 写入ipv6地址时使用的cidr后缀。0会使用默认值：32。
+    rule:
+        -   set_name4: "" # 存放ipv4地址的表名，表属性family需为`inet`。
+            set_name6: "" # 存放ipv6地址的表名，表属性family需为`inet6`。
+            domain: ""    # 域名策略。参见上文`upstream.policies`的`domain`说明。`accept`的域名的IP会写入ipset。
+        -   set_name4: ""
+            set_name6: ""
+            domain: ""
+        # ...
+        # 可继续添加规则
+
 # CA证书设定
 ca:
     # 导入用于TLS(DoT/DoH)验证的CA证书。证书需为PEM格式。
