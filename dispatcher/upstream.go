@@ -65,7 +65,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 
 	// load policies
 	if len(uc.Policies.Query.UnhandlableTypes) != 0 {
-		action, err := d.newAction(uc.Policies.Query.UnhandlableTypes)
+		action, err := newAction(uc.Policies.Query.UnhandlableTypes, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid unhandlable types action [%s]: %w", uc.Policies.Query.UnhandlableTypes, err)
 		}
@@ -73,7 +73,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Query.Domain) != 0 {
-		p, err := d.newDomainPolicies(uc.Policies.Query.Domain, false)
+		p, err := newDomainPolicies(uc.Policies.Query.Domain, nil, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load domain policies, %w", err)
 		}
@@ -81,7 +81,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Reply.ErrorRcode) != 0 {
-		action, err := d.newAction(uc.Policies.Reply.ErrorRcode)
+		action, err := newAction(uc.Policies.Reply.ErrorRcode, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid err rcode action [%s]: %w", uc.Policies.Reply.ErrorRcode, err)
 		}
@@ -89,7 +89,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Reply.CNAME) != 0 {
-		p, err := d.newDomainPolicies(uc.Policies.Reply.CNAME, true)
+		p, err := newDomainPolicies(uc.Policies.Reply.CNAME, d.servers, true)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load cname policies, %w", err)
 		}
@@ -97,7 +97,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Reply.WithoutIP) != 0 {
-		action, err := d.newAction(uc.Policies.Reply.WithoutIP)
+		action, err := newAction(uc.Policies.Reply.WithoutIP, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid without ip action [%s]: %w", uc.Policies.Reply.WithoutIP, err)
 		}
@@ -105,7 +105,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Reply.IP) != 0 {
-		p, err := d.newIPPolicies(uc.Policies.Reply.IP)
+		p, err := newIPPolicies(uc.Policies.Reply.IP, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load ip policies, %w", err)
 		}

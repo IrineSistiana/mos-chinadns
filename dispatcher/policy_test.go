@@ -7,14 +7,12 @@ import (
 )
 
 func Test_ipPolicies(t *testing.T) {
-
-	d := new(Dispatcher)
 	// new policies
-	p1, err := d.newIPPolicies("accept:./testdata/ip.list|deny")
+	p1, err := newIPPolicies("accept:./testdata/ip.list|deny", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p2, err := d.newIPPolicies("deny:./testdata/ip.list|accept")
+	p2, err := newIPPolicies("deny:./testdata/ip.list|accept", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,14 +42,12 @@ func Test_ipPolicies(t *testing.T) {
 }
 
 func Test_domainPolicies(t *testing.T) {
-
-	d := new(Dispatcher)
 	// new policies
-	p1, err := d.newDomainPolicies("accept:./testdata/domain.list|deny", false)
+	p1, err := newDomainPolicies("accept:./testdata/domain.list|deny", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p2, err := d.newDomainPolicies("deny:./testdata/domain.list|accept", false)
+	p2, err := newDomainPolicies("deny:./testdata/domain.list|accept", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

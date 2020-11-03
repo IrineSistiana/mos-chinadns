@@ -42,6 +42,8 @@ type Dispatcher struct {
 
 	// for faster range operation
 	entriesSlice []*upstreamEntry
+
+	ipsetHandler *ipsetHandler
 }
 
 // InitDispatcher inits a dispatcher from configuration
@@ -84,12 +86,28 @@ func InitDispatcher(c *config.Config) (*Dispatcher, error) {
 		d.entriesSlice = append(d.entriesSlice, u)
 	}
 
+	handler, err := newIPSetHandler(c)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init ipset handler: %w", err)
+	}
+	d.ipsetHandler = handler
+
 	return d, nil
 }
 
 // ServeDNS sends q to upstreams and return first valid result.
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	return d.dispatch(ctx, q)
+	r, err = d.dispatch(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if d.ipsetHandler != nil {
+		err := d.ipsetHandler.applyIPSet(q, r)
+		if err != nil {
+			logger.GetStd().Warnf("dispatch: [%v %d]: ipset handler: %v", q.Question, q.Id, err)
+		}
+	}
+	return r, nil
 }
 
 var (

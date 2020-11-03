@@ -60,7 +60,7 @@ type action struct {
 
 // newAction accepts policyActionAcceptStr, policyActionDenyStr
 // and string with prefix policyActionRedirectStr.
-func (d *Dispatcher) newAction(s string) (*action, error) {
+func newAction(s string, servers map[string]upstream.Upstream) (*action, error) {
 	var mode actionMode
 	var redirect upstream.Upstream
 	var ok bool
@@ -72,7 +72,7 @@ func (d *Dispatcher) newAction(s string) (*action, error) {
 	case strings.HasPrefix(s, policyActionRedirectPrefix):
 		mode = policyActionRedirect
 		serverTag := strings.TrimLeft(s, policyActionRedirectPrefix+"_")
-		redirect, ok = d.servers[serverTag]
+		redirect, ok = servers[serverTag]
 		if !ok {
 			return nil, fmt.Errorf("unable to redirect, can not find server with tag [%s]", serverTag)
 		}
@@ -103,7 +103,7 @@ type domainPolicy struct {
 	action  *action
 }
 
-func (d *Dispatcher) newIPPolicies(s string) (*ipPolicies, error) {
+func newIPPolicies(s string, servers map[string]upstream.Upstream) (*ipPolicies, error) {
 	ipps := new(ipPolicies)
 	ipps.policies = make([]*ipPolicy, 0)
 
@@ -114,7 +114,7 @@ func (d *Dispatcher) newIPPolicies(s string) (*ipPolicies, error) {
 		tmp := strings.SplitN(ss[i], ":", 2)
 
 		actionStr := tmp[0]
-		action, err := d.newAction(actionStr)
+		action, err := newAction(actionStr, servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid ip policy at index %d: %w", i, err)
 		}
@@ -151,7 +151,7 @@ func (ps *ipPolicies) check(ip net.IP) *action {
 	return nil
 }
 
-func (d *Dispatcher) newDomainPolicies(s string, allowRedirect bool) (*domainPolicies, error) {
+func newDomainPolicies(s string, servers map[string]upstream.Upstream, allowRedirect bool) (*domainPolicies, error) {
 	dps := new(domainPolicies)
 	dps.policies = make([]*domainPolicy, 0)
 
@@ -162,7 +162,7 @@ func (d *Dispatcher) newDomainPolicies(s string, allowRedirect bool) (*domainPol
 		tmp := strings.SplitN(ss[i], ":", 2)
 
 		actionStr := tmp[0]
-		action, err := d.newAction(actionStr)
+		action, err := newAction(actionStr, servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid domain policy at index %d: %w", i, err)
 		}

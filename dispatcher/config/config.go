@@ -33,6 +33,13 @@ type Config struct {
 	Upstream map[string]*UpstreamEntryConfig `yaml:"upstream"`
 	Server   map[string]*BasicUpstreamConfig `yaml:"server"`
 
+	IPSet struct {
+		CheckCNAME bool         `yaml:"check_cname"`
+		Mask4      uint8        `yaml:"mask4"`
+		Mask6      uint8        `yaml:"mask6"`
+		Rule       []*IPSetRule `yaml:"rule"`
+	} `yaml:"ipset"`
+
 	CA struct {
 		Path []string `yaml:"path"`
 	} `yaml:"ca"`
@@ -87,6 +94,12 @@ type BasicUpstreamConfig struct {
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify,omitempty"`
 }
 
+type IPSetRule struct {
+	SetName4 string `yaml:"set_name4"`
+	SetName6 string `yaml:"set_name6"`
+	Domain   string `yaml:"domain"`
+}
+
 // LoadConfig loads a yaml config from path p.
 func LoadConfig(p string) (*Config, error) {
 	c := new(Config)
@@ -112,6 +125,9 @@ func GenConfig(p string) error {
 	c.Server = make(map[string]*BasicUpstreamConfig)
 	c.Server["server1"] = new(BasicUpstreamConfig)
 	c.Server["server2"] = new(BasicUpstreamConfig)
+
+	ipsetConfig := &IPSetRule{}
+	c.IPSet.Rule = append(c.IPSet.Rule, ipsetConfig, ipsetConfig)
 	f, err := os.Create(p)
 	if err != nil {
 		return err
