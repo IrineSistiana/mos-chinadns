@@ -34,12 +34,27 @@ import (
 // NewDomainMatcherFormFile loads a list matcher or a v2fly matcher from file.
 // if file has a ':' and has format like 'geosite:cn', a v2fly matcher will be returned.
 func NewDomainMatcherFormFile(file string) (domain.Matcher, error) {
+	e, ok := loadFromCache(file)
+	if ok {
+		if m, ok := e.(domain.Matcher); ok {
+			return m, nil
+		}
+	}
+
+	var m domain.Matcher
+	var err error
 	if strings.Contains(file, ":") {
 		tmp := strings.SplitN(file, ":", 2)
-		return NewV2MatcherFromFile(tmp[0], tmp[1]) // file and tag
+		m, err = NewV2MatcherFromFile(tmp[0], tmp[1]) // file and tag
 	} else {
-		return NewDomainListMatcherFormFile(file, true)
+		m, err = NewDomainListMatcherFormFile(file, true)
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	cacheData(file, m)
+	return m, nil
 }
 
 func NewDomainListMatcherFormFile(file string, continueOnInvalidString bool) (domain.Matcher, error) {

@@ -29,12 +29,28 @@ import (
 // NewIPMatcherFromFile loads a netlist file a list or geoip file.
 // if file contains a ':' and has format like 'geoip:cn', file must be a geoip file.
 func NewIPMatcherFromFile(file string) (netlist.Matcher, error) {
+	e, ok := loadFromCache(file)
+	if ok {
+		if m, ok := e.(netlist.Matcher); ok {
+			return m, nil
+		}
+	}
+
+	var m netlist.Matcher
+	var err error
 	if strings.Contains(file, ":") {
 		tmp := strings.SplitN(file, ":", 2)
-		return NewNetListFromDAT(tmp[0], tmp[1]) // file and tag
+		m, err = NewNetListFromDAT(tmp[0], tmp[1]) // file and tag
 	} else {
-		return NewListFromListFile(file, true)
+		m, err = NewListFromListFile(file, true)
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	cacheData(file, m)
+	return m, nil
 }
 
 // NewListFromFile read IP list from a file, the returned NetList is already been sorted.

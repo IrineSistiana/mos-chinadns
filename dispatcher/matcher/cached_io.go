@@ -25,9 +25,11 @@ import (
 	"time"
 )
 
+var matcherCache = utils.NewCache()
+
 func loadFromCacheOrRawDisk(file string) (interface{}, []byte, error) {
 	// load from cache
-	data, ok := utils.Load(file)
+	data, ok := loadFromCache(file)
 	if ok {
 		return data, nil, nil
 	}
@@ -48,6 +50,10 @@ func loadFromCacheOrRawDisk(file string) (interface{}, []byte, error) {
 	return nil, b, nil
 }
 
+func loadFromCache(key string) (interface{}, bool) {
+	return matcherCache.Load(key)
+}
+
 func cacheData(key string, value interface{}) {
-	utils.Put(key, value, time.Second*15)
+	matcherCache.Put(key, value, time.Second*15)
 }
