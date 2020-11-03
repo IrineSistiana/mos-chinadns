@@ -87,12 +87,12 @@ def go_build():
             with zipfile.ZipFile(zip_filename, mode='w', compression=zipfile.ZIP_DEFLATED,
                                  compresslevel=5) as zf:
                 zf.write(bin_filename)
-                zf.write('../README.md')
-                zf.write('../config.yaml')
+                zf.write('../README.md', 'README.md')
+                zf.write('../config.yaml', 'config.yaml')
                 zf.write('chn_ip.list')
                 zf.write('chn_domain.list')
                 zf.write('non_chn_domain.list')
-                zf.write('../LICENSE')
+                zf.write('../LICENSE', 'LICENSE')
                 if os_env['GOOS'] == 'windows':
                     zf.write('../scripts/windows/mos-chinadns-winsw.xml', 'mos-chinadns-winsw.xml')
                     zf.write('../scripts/windows/service_control.bat', 'service_control.bat')
