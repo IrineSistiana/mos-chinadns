@@ -137,7 +137,7 @@ func NewUpstreamServer(c *config.BasicUpstreamConfig, rootCAs *x509.CertPool) (U
 			InsecureSkipVerify: c.InsecureSkipVerify,
 		}
 
-		backend = NewDoTUpstream(c.Addr, c.Socks5, time.Duration(c.TCP.IdleTimeout)*time.Second, tlsConf)
+		backend = NewDoTUpstream(c.Addr, c.Socks5, time.Duration(c.DoT.IdleTimeout)*time.Second, tlsConf)
 
 	case "doh":
 		if len(c.DoH.URL) == 0 {
