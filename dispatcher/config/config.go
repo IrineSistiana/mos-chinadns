@@ -64,18 +64,9 @@ type UpstreamEntryConfig struct {
 
 // BasicUpstreamConfig is a basic config for a dns upstream.
 type BasicUpstreamConfig struct {
-	Addr        string `yaml:"addr"`
-	Protocol    string `yaml:"protocol"`
-	Socks5      string `yaml:"socks5"`
-	Deduplicate bool   `yaml:"deduplicate"`
-
-	EDNS0 struct {
-		ClientSubnet struct {
-			Ipv4 string `yaml:"ipv4"`
-			Ipv6 string `yaml:"ipv6"`
-		} `yaml:"client_subnet"`
-		OverwriteECS bool `yaml:"overwrite_ecs"`
-	} `yaml:"edns0"`
+	Addr     string `yaml:"addr"`
+	Protocol string `yaml:"protocol"`
+	Socks5   string `yaml:"socks5"`
 
 	TCP struct {
 		IdleTimeout uint `yaml:"idle_timeout"`
@@ -92,6 +83,16 @@ type BasicUpstreamConfig struct {
 
 	// for test and experts only, we add `omitempty`
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify,omitempty"`
+
+	Deduplicate bool `yaml:"deduplicate"`
+
+	EDNS0 struct {
+		ClientSubnet struct {
+			Ipv4 string `yaml:"ipv4"`
+			Ipv6 string `yaml:"ipv6"`
+		} `yaml:"client_subnet"`
+		OverwriteECS bool `yaml:"overwrite_ecs"`
+	} `yaml:"edns0"`
 }
 
 type IPSetRule struct {
