@@ -18,23 +18,11 @@
 package dispatcher
 
 import (
-	"context"
 	"fmt"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
-	"github.com/miekg/dns"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/server"
 	"net"
 	"strings"
-	"sync"
-	"time"
-)
-
-const (
-	serverTCPReadTimeout  = time.Second * 8
-	serverTCPWriteTimeout = time.Second
-	serverUDPWriteTimeout = time.Second
-
-	queryTimeout = time.Second * 5
 )
 
 // StartServer starts mos-chinadns. Will always return a non-nil err.
@@ -44,7 +32,6 @@ func (d *Dispatcher) StartServer() error {
 		return fmt.Errorf("no address to bind")
 	}
 
-	wg := sync.WaitGroup{}
 	errChan := make(chan error, 1) // must be a buffered chan to catch at least one err.
 
 	for _, s := range d.config.Dispatcher.Bind {
@@ -55,6 +42,7 @@ func (d *Dispatcher) StartServer() error {
 		network := ss[0]
 		addr := ss[1]
 
+		var s server.Server
 		switch network {
 		case "tcp", "tcp4", "tcp6":
 			l, err := net.Listen(network, addr)
@@ -64,15 +52,8 @@ func (d *Dispatcher) StartServer() error {
 			defer l.Close()
 			logger.GetStd().Infof("StartServer: tcp server started at %s", l.Addr())
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				err := d.listenAndServeTCP(l)
-				select {
-				case errChan <- err:
-				default:
-				}
-			}()
+			s = server.NewTCPServer(l, d)
+
 		case "udp", "udp4", "udp6":
 			l, err := net.ListenPacket(network, addr)
 			if err != nil {
@@ -81,131 +62,21 @@ func (d *Dispatcher) StartServer() error {
 			defer l.Close()
 			logger.GetStd().Infof("StartServer: udp server started at %s", l.LocalAddr())
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				err := d.listenAndServeUDP(l)
-				select {
-				case errChan <- err:
-				default:
-				}
-			}()
+			s = server.NewUDPServer(l, d, d.config.Dispatcher.MaxUDPSize)
 		default:
 			return fmt.Errorf("invalid bind protocol: %s", network)
 		}
+
+		go func() {
+			err := s.ListenAndServe()
+			select {
+			case errChan <- err:
+			default:
+			}
+		}()
 	}
 
 	listenerErr := <-errChan
 
 	return fmt.Errorf("server listener failed and exited: %w", listenerErr)
-}
-
-// listenAndServeTCP start a tcp server at given l. Will always return non-nil err.
-func (d *Dispatcher) listenAndServeTCP(l net.Listener) error {
-	listenerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	for {
-		c, err := l.Accept()
-
-		if err != nil {
-			er, ok := err.(net.Error)
-			if ok && er.Temporary() {
-				logger.GetStd().Warnf("listenAndServeTCP: listener: temporary err: %v", err)
-				time.Sleep(time.Millisecond * 100)
-				continue
-			} else {
-				return fmt.Errorf("listener: %s", err)
-			}
-		}
-
-		go func() {
-			defer c.Close()
-			tcpConnCtx, cancel := context.WithCancel(listenerCtx)
-			defer cancel()
-
-			for {
-				c.SetReadDeadline(time.Now().Add(serverTCPReadTimeout))
-				q, _, err := utils.ReadMsgFromTCP(c)
-				if err != nil {
-					return // read err, close the conn
-				}
-
-				go func() {
-					queryCtx, cancel := context.WithTimeout(tcpConnCtx, queryTimeout)
-					defer cancel()
-
-					logger.GetStd().Debugf("listenAndServeTCP %s: [%v %d]: new query from %s,", l.Addr(), q.Question, q.Id, c.RemoteAddr())
-
-					r, err := d.ServeDNS(queryCtx, q)
-					if err != nil {
-						logger.GetStd().Warnf("listenAndServeTCP %s: [%v %d]: query failed: %v", l.Addr(), q.Question, q.Id, err)
-						return // ignore it, result is empty
-					}
-
-					c.SetWriteDeadline(time.Now().Add(serverTCPWriteTimeout))
-					_, err = utils.WriteMsgToTCP(c, r)
-					if err != nil {
-						logger.GetStd().Warnf("listenAndServeTCP %s: [%v %d]: failed to send reply back, WriteMsgToTCP: %v", l.Addr(), q.Question, q.Id, err)
-					}
-				}()
-
-			}
-		}()
-	}
-}
-
-// listenAndServeUDP start a udp server at given l. Will always return non-nil err.
-func (d *Dispatcher) listenAndServeUDP(l net.PacketConn) error {
-	listenerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	for {
-		q, from, _, err := utils.ReadUDPMsgFrom(l, utils.IPv4UdpMaxPayload)
-		if err != nil {
-			netErr, ok := err.(net.Error)
-			if ok { // is a net err
-				if netErr.Temporary() {
-					logger.GetStd().Warnf("listenAndServeUDP: listener temporary err: %v", err)
-					time.Sleep(time.Millisecond * 100)
-					continue
-				} else {
-					return fmt.Errorf("listenAndServeUDP: unexpected listener err: %w", err)
-				}
-			} else { // invalid msg
-				continue
-			}
-		}
-
-		go func() {
-			queryCtx, cancel := context.WithTimeout(listenerCtx, queryTimeout)
-			defer cancel()
-
-			logger.GetStd().Debugf("listenAndServeUDP %s: [%v %d]: new query from %s", l.LocalAddr(), q.Question, q.Id, from)
-
-			r, err := d.ServeDNS(queryCtx, q)
-			if err != nil {
-				logger.GetStd().Warnf("listenAndServeUDP %s: [%v %d]: query failed: %v", l.LocalAddr(), q.Question, q.Id, err)
-				return
-			}
-
-			// truncate
-			var udpSize int
-			if opt := q.IsEdns0(); opt != nil {
-				udpSize = int(opt.Hdr.Class)
-			} else {
-				udpSize = dns.MinMsgSize
-			}
-			if d.config.Dispatcher.MaxUDPSize > dns.MinMsgSize && udpSize > d.config.Dispatcher.MaxUDPSize {
-				udpSize = d.config.Dispatcher.MaxUDPSize
-			}
-			r.Truncate(udpSize)
-
-			l.SetWriteDeadline(time.Now().Add(serverUDPWriteTimeout))
-			_, err = utils.WriteUDPMsgTo(r, l, from)
-			if err != nil {
-				logger.GetStd().Warnf("listenAndServeUDP %s: [%v %d]: failed to send reply back: %v", l.LocalAddr(), q.Question, q.Id, err)
-			}
-		}()
-	}
 }
