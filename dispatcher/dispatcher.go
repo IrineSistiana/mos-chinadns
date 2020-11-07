@@ -95,16 +95,24 @@ func InitDispatcher(c *config.Config) (*Dispatcher, error) {
 	return d, nil
 }
 
-// ServeDNS sends q to upstreams and return first valid result.
+// ServeDNS sends q to upstreams and return its first valid result.
+// ServeDNS will add r's IPs to ipset.
+// If all upstreams failed, ServeDNS will return a r with r.Code = dns.RcodeServerFailure
 func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err error) {
-	r, err = d.dispatch(ctx, q)
+	r, err = d.Dispatch(ctx, q)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, ErrUpstreamsFailed) {
+			r = new(dns.Msg)
+			r.SetReply(q)
+			r.Rcode = dns.RcodeServerFailure
+		}
+		return r, err
 	}
+
 	if d.ipsetHandler != nil {
 		err := d.ipsetHandler.applyIPSet(q, r)
 		if err != nil {
-			logger.GetStd().Warnf("dispatch: [%v %d]: ipset handler: %v", q.Question, q.Id, err)
+			logger.GetStd().Warnf("ServeDNS: [%v %d]: ipset handler: %v", q.Question, q.Id, err)
 		}
 	}
 	return r, nil
@@ -115,7 +123,8 @@ var (
 	ErrUpstreamsFailed = errors.New("all upstreams failed or not respond in time")
 )
 
-func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+// Dispatch sends q to upstreams and return its first valid result.
+func (d *Dispatcher) Dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 	resChan := make(chan *dns.Msg, 1)
 	upstreamWG := sync.WaitGroup{}
 	for i := range d.entriesSlice {
@@ -130,13 +139,13 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 			rtt := time.Since(queryStart).Milliseconds()
 			if err != nil {
 				if err != context.Canceled && err != context.DeadlineExceeded {
-					logger.GetStd().Warnf("dispatch: [%v %d]: upstream %s err after %dms: %v,", q.Question, q.Id, entry.name, rtt, err)
+					logger.GetStd().Warnf("Dispatch: [%v %d]: upstream %s err after %dms: %v,", q.Question, q.Id, entry.name, rtt, err)
 				}
 				return
 			}
 
 			if r != nil {
-				logger.GetStd().Debugf("dispatch: [%v %d]: reply from upstream %s accepted, rtt: %dms", q.Question, q.Id, entry.name, rtt)
+				logger.GetStd().Debugf("Dispatch: [%v %d]: reply from upstream %s accepted, rtt: %dms", q.Question, q.Id, entry.name, rtt)
 				select {
 				case resChan <- r:
 				default:
@@ -146,7 +155,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 	}
 	upstreamFailedNotificationChan := make(chan struct{}, 0)
 
-	// this go routine notifies the dispatch if all upstreams are failed
+	// this go routine notifies the Dispatch if all upstreams are failed
 	go func() {
 		// all upstreams are returned
 		upstreamWG.Wait()

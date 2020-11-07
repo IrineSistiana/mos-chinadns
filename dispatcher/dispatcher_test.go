@@ -38,7 +38,7 @@ func Test_dispatch(t *testing.T) {
 	d.entriesSlice = append(d.entriesSlice, &upstreamEntry{backend: &fakeUpstream{latency: time.Millisecond * 0, ip: u1ip}})
 	d.entriesSlice = append(d.entriesSlice, &upstreamEntry{backend: &fakeUpstream{latency: time.Millisecond * 300, ip: u2ip}})
 
-	r, err := d.dispatch(context.Background(), q)
+	r, err := d.Dispatch(context.Background(), q)
 	if err != nil {
 		t.Fatal(err)
 	}

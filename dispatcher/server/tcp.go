@@ -82,13 +82,14 @@ func (s *tcpServer) ListenAndServe() error {
 					r, err := s.handler.ServeDNS(queryCtx, q)
 					if err != nil {
 						logger.GetStd().Warnf("tcp server %s: [%v %d]: query failed: %v", s.l.Addr(), q.Question, q.Id, err)
-						return // ignore it, result is empty
 					}
 
-					c.SetWriteDeadline(time.Now().Add(serverTCPWriteTimeout))
-					_, err = utils.WriteMsgToTCP(c, r)
-					if err != nil {
-						logger.GetStd().Warnf("tcp server %s: [%v %d]: failed to send reply back, WriteMsgToTCP: %v", s.l.Addr(), q.Question, q.Id, err)
+					if r != nil {
+						c.SetWriteDeadline(time.Now().Add(serverTCPWriteTimeout))
+						_, err = utils.WriteMsgToTCP(c, r)
+						if err != nil {
+							logger.GetStd().Warnf("tcp server %s: [%v %d]: failed to send reply back, WriteMsgToTCP: %v", s.l.Addr(), q.Question, q.Id, err)
+						}
 					}
 				}()
 

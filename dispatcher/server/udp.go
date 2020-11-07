@@ -82,23 +82,24 @@ func (s *udpServer) ListenAndServe() error {
 			r, err := s.handler.ServeDNS(queryCtx, q)
 			if err != nil {
 				logger.GetStd().Warnf("udp server %s: [%v %d]: query failed: %v", s.c.LocalAddr(), q.Question, q.Id, err)
-				return
 			}
 
-			// truncate
-			var udpSize int
-			if opt := q.IsEdns0(); opt != nil {
-				udpSize = int(opt.Hdr.Class)
-			} else {
-				udpSize = dns.MinMsgSize
-			}
+			if r != nil {
+				// truncate
+				var udpSize int
+				if opt := q.IsEdns0(); opt != nil {
+					udpSize = int(opt.Hdr.Class)
+				} else {
+					udpSize = dns.MinMsgSize
+				}
 
-			r.Truncate(udpSize)
+				r.Truncate(udpSize)
 
-			s.c.SetWriteDeadline(time.Now().Add(serverUDPWriteTimeout))
-			_, err = utils.WriteUDPMsgTo(r, s.c, from)
-			if err != nil {
-				logger.GetStd().Warnf("udp server %s: [%v %d]: failed to send reply back: %v", s.c.LocalAddr(), q.Question, q.Id, err)
+				s.c.SetWriteDeadline(time.Now().Add(serverUDPWriteTimeout))
+				_, err = utils.WriteUDPMsgTo(r, s.c, from)
+				if err != nil {
+					logger.GetStd().Warnf("udp server %s: [%v %d]: failed to send reply back: %v", s.c.LocalAddr(), q.Question, q.Id, err)
+				}
 			}
 		}()
 	}
