@@ -25,7 +25,6 @@ import (
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/ipset"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 	"github.com/miekg/dns"
-	"net"
 )
 
 func newIPSetHandler(c *config.Config) (*ipsetHandler, error) {
@@ -85,34 +84,31 @@ func (h *ipsetHandler) applyIPSet(q, r *dns.Msg) error {
 
 		if domainMatched {
 			for i := range r.Answer {
-				var ip net.IP
-				var setName string
-				var mask uint8
-				var isNET6 bool
+				entry := new(ipset.Entry)
 
 				switch rr := r.Answer[i].(type) {
 				case *dns.A:
-					ip = rr.A
-					setName = rule.setName4
-					mask = h.mask4
-					isNET6 = false
+					entry.IP = rr.A
+					entry.SetName = rule.setName4
+					entry.Mask = h.mask4
+					entry.IsNET6 = false
 				case *dns.AAAA:
-					ip = rr.AAAA
-					setName = rule.setName6
-					mask = h.mask6
-					isNET6 = true
+					entry.IP = rr.AAAA
+					entry.SetName = rule.setName6
+					entry.Mask = h.mask6
+					entry.IsNET6 = true
 				default:
 					continue
 				}
 
-				if len(setName) == 0 {
+				if len(entry.SetName) == 0 {
 					continue
 				}
 
-				logger.GetStd().Debugf("applyIPSet: [%v %d]: add %s/%d to set %s", q.Question, q.Id, ip, mask, setName)
-				err := ipset.AddCIDR(setName, ip, mask, isNET6)
+				logger.GetStd().Debugf("applyIPSet: [%v %d]: add %s/%d to set %s", q.Question, q.Id, entry.IP, entry.Mask, entry.SetName)
+				err := ipset.AddCIDR(entry)
 				if err != nil {
-					return fmt.Errorf("failed to add ip %s to set %s: %w", ip, setName, err)
+					return fmt.Errorf("failed to add ip %s to set %s: %w", entry.IP, entry.SetName, err)
 				}
 			}
 		}

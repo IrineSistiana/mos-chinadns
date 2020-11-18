@@ -32,19 +32,18 @@ const (
 	IPSET_ATTR_IPADDR_IPV6 = 2
 )
 
-func AddCIDR4(setName string, ip net.IP, ones uint8) error {
-	return AddCIDR(setName, ip, ones, false)
+type Entry struct {
+	SetName string
+	IP      net.IP
+	Mask    uint8
+	IsNET6  bool
 }
 
-func AddCIDR6(setName string, ip net.IP, ones uint8) error {
-	return AddCIDR(setName, ip, ones, true)
-}
-
-func AddCIDR(setName string, ip net.IP, ones uint8, isNET6 bool) error {
+func AddCIDR(e *Entry) error {
 	req := nl.NewNetlinkRequest(nl.IPSET_CMD_ADD|(unix.NFNL_SUBSYS_IPSET<<8), nl.GetIpsetFlags(nl.IPSET_CMD_ADD))
 
 	var nfgenFamily uint8
-	if isNET6 {
+	if e.IsNET6 {
 		nfgenFamily = uint8(unix.AF_INET6)
 	} else {
 		nfgenFamily = uint8(unix.AF_INET)
@@ -58,23 +57,22 @@ func AddCIDR(setName string, ip net.IP, ones uint8, isNET6 bool) error {
 	)
 
 	req.AddData(nl.NewRtAttr(nl.IPSET_ATTR_PROTOCOL, nl.Uint8Attr(nl.IPSET_PROTOCOL)))
-	req.AddData(nl.NewRtAttr(nl.IPSET_ATTR_SETNAME, nl.ZeroTerminated(setName)))
+	req.AddData(nl.NewRtAttr(nl.IPSET_ATTR_SETNAME, nl.ZeroTerminated(e.SetName)))
 	data := nl.NewRtAttr(nl.IPSET_ATTR_DATA|int(nl.NLA_F_NESTED), nil)
 
 	// set ip
 	addr := nl.NewRtAttr(nl.IPSET_ATTR_IP|int(nl.NLA_F_NESTED), nil)
-	if isNET6 {
-		addr.AddRtAttr(IPSET_ATTR_IPADDR_IPV6|int(nl.NLA_F_NET_BYTEORDER), ip)
+	if e.IsNET6 {
+		addr.AddRtAttr(IPSET_ATTR_IPADDR_IPV6|int(nl.NLA_F_NET_BYTEORDER), e.IP)
 	} else {
-		addr.AddRtAttr(IPSET_ATTR_IPADDR_IPV4|int(nl.NLA_F_NET_BYTEORDER), ip)
+		addr.AddRtAttr(IPSET_ATTR_IPADDR_IPV4|int(nl.NLA_F_NET_BYTEORDER), e.IP)
 	}
 	data.AddChild(addr)
 
 	// set mask
-	data.AddRtAttr(nl.IPSET_ATTR_CIDR, nl.Uint8Attr(ones))
+	data.AddRtAttr(nl.IPSET_ATTR_CIDR, nl.Uint8Attr(e.Mask))
 
 	req.AddData(data)
-
 	_, err := req.Execute(unix.NETLINK_NETFILTER, 0)
 
 	if err != nil {
