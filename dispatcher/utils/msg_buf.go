@@ -18,7 +18,7 @@
 //     This file is a modified version from github.com/xtaci/smux/blob/master/alloc.go f386d90
 //     license of smux: MIT https://github.com/xtaci/smux/blob/master/LICENSE
 
-package bufpool
+package utils
 
 import (
 	"fmt"

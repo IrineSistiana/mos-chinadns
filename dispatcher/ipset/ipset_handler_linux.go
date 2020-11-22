@@ -17,18 +17,30 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package dispatcher
+package ipset
 
 import (
 	"fmt"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/ipset"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/policy"
 	"github.com/miekg/dns"
 )
 
-func newIPSetHandler(c *config.Config) (*ipsetHandler, error) {
-	h := new(ipsetHandler)
+type Handler struct {
+	checkCAME    bool
+	mask4, mask6 uint8
+	rules        []*rule
+}
+
+type rule struct {
+	setName4       string
+	setName6       string
+	domainPolicies *policy.DomainPolicies
+}
+
+func NewIPSetHandler(c *config.Config) (*Handler, error) {
+	h := new(Handler)
 	h.checkCAME = c.IPSet.CheckCNAME
 	h.mask4 = c.IPSet.Mask4
 	h.mask6 = c.IPSet.Mask6
@@ -46,11 +58,11 @@ func newIPSetHandler(c *config.Config) (*ipsetHandler, error) {
 			continue
 		}
 
-		dps, err := newDomainPolicies(ipsetConfig.Domain, nil, false)
+		dps, err := policy.NewDomainPolicies(ipsetConfig.Domain, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to init ipset domain policies %s: %w", ipsetConfig.Domain, err)
 		}
-		rule := &ipsetRule{
+		rule := &rule{
 			setName4:       ipsetConfig.SetName4,
 			setName6:       ipsetConfig.SetName6,
 			domainPolicies: dps,
@@ -61,12 +73,12 @@ func newIPSetHandler(c *config.Config) (*ipsetHandler, error) {
 	return h, nil
 }
 
-func (h *ipsetHandler) applyIPSet(q, r *dns.Msg) error {
+func (h *Handler) ApplyIPSet(q, r *dns.Msg) error {
 	for _, rule := range h.rules {
 		domainMatched := false
 
 		for i := range q.Question { // match question first
-			if action := rule.domainPolicies.check(q.Question[i].Name); action != nil && action.mode == policyActionAccept {
+			if action := rule.domainPolicies.Match(q.Question[i].Name); action != nil && action.Mode == policy.PolicyActionAccept {
 				domainMatched = true
 				break
 			}
@@ -74,7 +86,7 @@ func (h *ipsetHandler) applyIPSet(q, r *dns.Msg) error {
 		if !domainMatched && h.checkCAME { // match cname
 			for i := range r.Answer {
 				if cname, ok := r.Answer[i].(*dns.CNAME); ok {
-					if action := rule.domainPolicies.check(cname.Target); action != nil && action.mode == policyActionAccept {
+					if action := rule.domainPolicies.Match(cname.Target); action != nil && action.Mode == policy.PolicyActionAccept {
 						domainMatched = true
 						break
 					}
@@ -84,7 +96,7 @@ func (h *ipsetHandler) applyIPSet(q, r *dns.Msg) error {
 
 		if domainMatched {
 			for i := range r.Answer {
-				entry := new(ipset.Entry)
+				entry := new(Entry)
 
 				switch rr := r.Answer[i].(type) {
 				case *dns.A:
@@ -105,8 +117,8 @@ func (h *ipsetHandler) applyIPSet(q, r *dns.Msg) error {
 					continue
 				}
 
-				logger.GetStd().Debugf("applyIPSet: [%v %d]: add %s/%d to set %s", q.Question, q.Id, entry.IP, entry.Mask, entry.SetName)
-				err := ipset.AddCIDR(entry)
+				logger.GetStd().Debugf("ApplyIPSet: [%v %d]: add %s/%d to set %s", q.Question, q.Id, entry.IP, entry.Mask, entry.SetName)
+				err := AddCIDR(entry)
 				if err != nil {
 					return fmt.Errorf("failed to add ip %s to set %s: %w", entry.IP, entry.SetName, err)
 				}

@@ -18,7 +18,6 @@
 package utils
 
 import (
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 	"io"
 	"net"
@@ -30,8 +29,8 @@ const (
 )
 
 func ReadUDPMsgFrom(c net.PacketConn, bufSize int) (m *dns.Msg, from net.Addr, n int, err error) {
-	buf := bufpool.GetMsgBuf(bufSize)
-	defer bufpool.ReleaseMsgBuf(buf)
+	buf := GetMsgBuf(bufSize)
+	defer ReleaseMsgBuf(buf)
 
 	n, from, err = c.ReadFrom(buf)
 	if err != nil {
@@ -52,8 +51,8 @@ func ReadUDPMsgFrom(c net.PacketConn, bufSize int) (m *dns.Msg, from net.Addr, n
 }
 
 func ReadMsgFromUDP(c io.Reader, bufSize int) (m *dns.Msg, n int, err error) {
-	buf := bufpool.GetMsgBuf(bufSize)
-	defer bufpool.ReleaseMsgBuf(buf)
+	buf := GetMsgBuf(bufSize)
+	defer ReleaseMsgBuf(buf)
 
 	n, err = c.Read(buf)
 	if err != nil {
@@ -76,7 +75,7 @@ func WriteMsgToUDP(c io.Writer, m *dns.Msg) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-	defer bufpool.ReleaseMsgBuf(buf)
+	defer ReleaseMsgBuf(buf)
 
 	return WriteRawMsgToUDP(c, mRaw)
 }
@@ -90,7 +89,7 @@ func WriteUDPMsgTo(m *dns.Msg, c net.PacketConn, to net.Addr) (n int, err error)
 	if err != nil {
 		return 0, err
 	}
-	defer bufpool.ReleaseMsgBuf(buf)
+	defer ReleaseMsgBuf(buf)
 
 	return c.WriteTo(mRaw, to)
 }

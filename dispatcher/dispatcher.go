@@ -23,8 +23,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/ipset"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/server"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
 	"io/ioutil"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,13 +41,10 @@ import (
 type Dispatcher struct {
 	config *config.Config
 
-	servers         map[string]upstream.Upstream
-	upstreamEntries map[string]*upstreamEntry
-
-	// for faster range operation
+	servers      map[string]upstream.Upstream
 	entriesSlice []*upstreamEntry
 
-	ipsetHandler *ipsetHandler
+	ipsetHandler *ipset.Handler
 }
 
 // InitDispatcher inits a dispatcher from configuration
@@ -86,7 +87,7 @@ func InitDispatcher(c *config.Config) (*Dispatcher, error) {
 		d.entriesSlice = append(d.entriesSlice, u)
 	}
 
-	handler, err := newIPSetHandler(c)
+	handler, err := ipset.NewIPSetHandler(c)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init ipset handler: %w", err)
 	}
@@ -110,7 +111,7 @@ func (d *Dispatcher) ServeDNS(ctx context.Context, q *dns.Msg) (r *dns.Msg, err 
 	}
 
 	if d.ipsetHandler != nil {
-		err := d.ipsetHandler.applyIPSet(q, r)
+		err := d.ipsetHandler.ApplyIPSet(q, r)
 		if err != nil {
 			logger.GetStd().Warnf("ServeDNS: [%v %d]: ipset handler: %v", q.Question, q.Id, err)
 		}
@@ -174,6 +175,62 @@ func (d *Dispatcher) Dispatch(ctx context.Context, q *dns.Msg) (*dns.Msg, error)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// StartServer starts mos-chinadns. Will always return a non-nil err.
+func (d *Dispatcher) StartServer() error {
+
+	if len(d.config.Dispatcher.Bind) == 0 {
+		return fmt.Errorf("no address to bind")
+	}
+
+	errChan := make(chan error, 1) // must be a buffered chan to catch at least one err.
+
+	for _, s := range d.config.Dispatcher.Bind {
+		ss := strings.Split(s, "://")
+		if len(ss) != 2 {
+			return fmt.Errorf("invalid bind address: %s", s)
+		}
+		network := ss[0]
+		addr := ss[1]
+
+		var s server.Server
+		switch network {
+		case "tcp", "tcp4", "tcp6":
+			l, err := net.Listen(network, addr)
+			if err != nil {
+				return err
+			}
+			defer l.Close()
+			logger.GetStd().Infof("StartServer: tcp server started at %s", l.Addr())
+
+			s = server.NewTCPServer(l, d)
+
+		case "udp", "udp4", "udp6":
+			l, err := net.ListenPacket(network, addr)
+			if err != nil {
+				return err
+			}
+			defer l.Close()
+			logger.GetStd().Infof("StartServer: udp server started at %s", l.LocalAddr())
+
+			s = server.NewUDPServer(l, d, d.config.Dispatcher.MaxUDPSize)
+		default:
+			return fmt.Errorf("invalid bind protocol: %s", network)
+		}
+
+		go func() {
+			err := s.ListenAndServe()
+			select {
+			case errChan <- err:
+			default:
+			}
+		}()
+	}
+
+	listenerErr := <-errChan
+
+	return fmt.Errorf("server listener failed and exited: %w", listenerErr)
 }
 
 func caPath2Pool(cas []string) (*x509.CertPool, error) {

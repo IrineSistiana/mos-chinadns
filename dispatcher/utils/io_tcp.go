@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 )
 
@@ -46,8 +45,8 @@ func ReadMsgFromTCP(c io.Reader) (m *dns.Msg, n int, err error) {
 		return nil, n, dns.ErrShortRead
 	}
 
-	buf := bufpool.GetMsgBuf(int(length))
-	defer bufpool.ReleaseMsgBuf(buf)
+	buf := GetMsgBuf(int(length))
+	defer ReleaseMsgBuf(buf)
 
 	n2, err := io.ReadFull(c, buf)
 	n = n + n2
@@ -70,7 +69,7 @@ func WriteMsgToTCP(c io.Writer, m *dns.Msg) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-	defer bufpool.ReleaseMsgBuf(buf)
+	defer ReleaseMsgBuf(buf)
 
 	return WriteRawMsgToTCP(c, mRaw)
 }

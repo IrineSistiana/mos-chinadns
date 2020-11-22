@@ -23,6 +23,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"io"
 	"net"
 	"net/http"
@@ -35,7 +36,6 @@ import (
 
 	"golang.org/x/net/http2"
 
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 )
 
@@ -127,7 +127,7 @@ func (u *upstreamDoH) Exchange(_ context.Context, q *dns.Msg) (r *dns.Msg, err e
 	ctx, cancel := context.WithTimeout(context.Background(), dohIOTimeout)
 	defer cancel()
 
-	buf, err := bufpool.GetMsgBufFor(q)
+	buf, err := utils.GetMsgBufFor(q)
 	if err != nil {
 		return nil, fmt.Errorf("invalid msg q: %w", err)
 	}
@@ -195,8 +195,8 @@ func (u *upstreamDoH) doHTTP(ctx context.Context, url string) (*dns.Msg, error) 
 	case resp.ContentLength > dns.MaxMsgSize:
 		return nil, fmt.Errorf("content-length %d is bigger than dns.MaxMsgSize %d", resp.ContentLength, dns.MaxMsgSize)
 	case resp.ContentLength > 12:
-		buf = bufpool.GetMsgBuf(int(resp.ContentLength))
-		defer bufpool.ReleaseMsgBuf(buf)
+		buf = utils.GetMsgBuf(int(resp.ContentLength))
+		defer utils.ReleaseMsgBuf(buf)
 		_, err = io.ReadFull(resp.Body, buf)
 		if err != nil {
 			return nil, fmt.Errorf("unexpected err when read http resp body: %w", err)

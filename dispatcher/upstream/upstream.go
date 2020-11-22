@@ -22,9 +22,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/ecs"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"github.com/miekg/dns"
 	"golang.org/x/sync/singleflight"
 	"time"
@@ -99,11 +99,11 @@ func (u *BasicUpstream) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 }
 
 func getMsgKey(m *dns.Msg) (string, error) {
-	buf, err := bufpool.GetMsgBufFor(m)
+	buf, err := utils.GetMsgBufFor(m)
 	if err != nil {
 		return "", err
 	}
-	defer bufpool.ReleaseMsgBuf(buf)
+	defer utils.ReleaseMsgBuf(buf)
 
 	wireMsg, err := m.PackBuffer(buf)
 	if err != nil {

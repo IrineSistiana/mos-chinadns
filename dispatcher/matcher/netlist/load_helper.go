@@ -18,10 +18,13 @@
 package netlist
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"github.com/golang/protobuf/proto"
+	"io"
 	"strings"
 	"time"
 	"v2ray.com/core/app/router"
@@ -32,6 +35,42 @@ var matcherCache = utils.NewCache()
 const (
 	cacheTTL = time.Second * 30
 )
+
+//NewListFromReader read IP list from a reader, if no valid IP addr was found,
+//it will return a empty NetList, NOT nil. NetList will be a sorted list.
+func NewListFromReader(reader io.Reader, continueOnInvalidString bool) (*List, error) {
+
+	ipNetList := NewNetList()
+	s := bufio.NewScanner(reader)
+
+	//count how many lines we have read.
+	lineCounter := 0
+
+	for s.Scan() {
+		lineCounter++
+		line := strings.TrimSpace(s.Text())
+
+		//ignore lines begin with # and empty lines
+		if len(line) == 0 || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		ipNet, err := ParseCIDR(line)
+		if err != nil {
+			if continueOnInvalidString {
+				logger.GetStd().Warnf("NewListFromReader: invalid CIDR format %s in line %d", line, lineCounter)
+				continue
+			} else {
+				return nil, fmt.Errorf("invalid CIDR format %s in line %d", line, lineCounter)
+			}
+		}
+
+		ipNetList.Append(ipNet)
+	}
+
+	ipNetList.Sort()
+	return ipNetList, nil
+}
 
 // NewIPMatcherFromFile loads a netlist file a list or geoip file.
 // if file contains a ':' and has format like 'geoip:cn', file must be a geoip file.

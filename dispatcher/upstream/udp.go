@@ -87,8 +87,7 @@ exchangeViaNewConn:
 }
 
 func (u *udpUpstream) exchangeViaUDPConn(q *dns.Msg, c net.Conn) (r *dns.Msg, err error) {
-	// write first
-	c.SetWriteDeadline(time.Now().Add(generalWriteTimeout)) // give write enough time to complete, avoid broken write.
+	c.SetWriteDeadline(time.Now().Add(generalWriteTimeout))
 	_, err = utils.WriteMsgToUDP(c, q)
 	if err != nil { // write err typically is a fatal err
 		return nil, fmt.Errorf("failed to write msg: %w", err)

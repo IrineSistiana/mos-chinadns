@@ -17,15 +17,17 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package dispatcher
+package ipset
 
 import (
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
 	"github.com/miekg/dns"
 )
 
-func newIPSetHandler(c *config.Config) (*ipsetHandler, error) {
+type Handler struct{}
+
+func NewIPSetHandler(c *config.Config) (*Handler, error) {
 	return nil, nil
 }
 
-func (h *ipsetHandler) applyIPSet(q, r *dns.Msg) error { return nil }
+func (h *Handler) ApplyIPSet(q, r *dns.Msg) error { return nil }

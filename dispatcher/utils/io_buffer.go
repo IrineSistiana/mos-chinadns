@@ -18,7 +18,6 @@
 package utils
 
 import (
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/bufpool"
 	"github.com/miekg/dns"
 	"sync"
 )
@@ -57,14 +56,14 @@ func releaseTCPWriteBuf(buf []byte) {
 // packMsgWithBuffer packs by bufpool.GetMsgBufFor(m).
 // Caller should release the buf using bufpool.ReleaseMsgBuf(buf) after mRaw is no longer used.
 func packMsgWithBuffer(m *dns.Msg) (mRaw, buf []byte, err error) {
-	buf, err = bufpool.GetMsgBufFor(m)
+	buf, err = GetMsgBufFor(m)
 	if err != nil {
 		return
 	}
 
 	mRaw, err = m.PackBuffer(buf)
 	if err != nil {
-		bufpool.ReleaseMsgBuf(buf)
+		ReleaseMsgBuf(buf)
 		return
 	}
 	return

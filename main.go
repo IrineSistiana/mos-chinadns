@@ -21,7 +21,8 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher/domain"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher/netlist"
 	"net"
 	"os"
 	"os/signal"
@@ -269,7 +270,7 @@ func probTCPTimeout(addr string, isTLS bool) error {
 }
 
 func benchIPList(f string) error {
-	list, err := matcher.NewIPMatcherFromFile(f)
+	list, err := netlist.NewIPMatcherFromFile(f)
 	if err != nil {
 		return err
 	}
@@ -290,7 +291,7 @@ func benchIPList(f string) error {
 }
 
 func benchDomainList(f string) error {
-	list, err := matcher.NewDomainMatcherFormFile(f)
+	list, err := domain.NewDomainMatcherFormFile(f)
 	if err != nil {
 		return err
 	}

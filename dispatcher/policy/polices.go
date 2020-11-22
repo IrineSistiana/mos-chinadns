@@ -15,11 +15,10 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package dispatcher
+package policy
 
 import (
 	"fmt"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher/domain"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher/netlist"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
@@ -27,84 +26,26 @@ import (
 	"strings"
 )
 
-type actionMode uint8
-
-const (
-	policyActionAcceptStr      string = "accept"
-	policyActionDenyStr        string = "deny"
-	policyActionRedirectPrefix string = "redirect"
-
-	policyActionAccept actionMode = iota
-	policyActionDeny
-	policyActionRedirect
-)
-
-var actionModeToStr = map[actionMode]string{
-	policyActionAccept:   policyActionAcceptStr,
-	policyActionDeny:     policyActionDenyStr,
-	policyActionRedirect: policyActionRedirectPrefix,
-}
-
-func (m actionMode) String() string {
-	s, ok := actionModeToStr[m]
-	if ok {
-		return s
-	}
-	return fmt.Sprintf("unknown action mode %d", m)
-}
-
-type action struct {
-	mode     actionMode
-	redirect upstream.Upstream
-}
-
-// newAction accepts policyActionAcceptStr, policyActionDenyStr
-// and string with prefix policyActionRedirectStr.
-func newAction(s string, servers map[string]upstream.Upstream) (*action, error) {
-	var mode actionMode
-	var redirect upstream.Upstream
-	var ok bool
-	switch {
-	case s == policyActionAcceptStr:
-		mode = policyActionAccept
-	case s == policyActionDenyStr:
-		mode = policyActionDeny
-	case strings.HasPrefix(s, policyActionRedirectPrefix):
-		mode = policyActionRedirect
-		serverTag := strings.TrimLeft(s, policyActionRedirectPrefix+"_")
-		redirect, ok = servers[serverTag]
-		if !ok {
-			return nil, fmt.Errorf("unable to redirect, can not find server with tag [%s]", serverTag)
-		}
-	default:
-		return nil, fmt.Errorf("invalid action [%s]", s)
-	}
-
-	return &action{mode: mode, redirect: redirect}, nil
-}
-
-type ipPolicies struct {
-	policies      []*ipPolicy
-	defaultAction *action
+type IPPolicies struct {
+	policies []*ipPolicy
 }
 
 type ipPolicy struct {
 	matcher netlist.Matcher
-	action  *action
+	action  *Action
 }
 
-type domainPolicies struct {
-	policies      []*domainPolicy
-	defaultAction *action
+type DomainPolicies struct {
+	policies []*domainPolicy
 }
 
 type domainPolicy struct {
 	matcher domain.Matcher
-	action  *action
+	action  *Action
 }
 
-func newIPPolicies(s string, servers map[string]upstream.Upstream) (*ipPolicies, error) {
-	ipps := new(ipPolicies)
+func NewIPPolicies(s string, servers map[string]upstream.Upstream) (*IPPolicies, error) {
+	ipps := new(IPPolicies)
 	ipps.policies = make([]*ipPolicy, 0)
 
 	ss := strings.Split(s, "|")
@@ -114,7 +55,7 @@ func newIPPolicies(s string, servers map[string]upstream.Upstream) (*ipPolicies,
 		tmp := strings.SplitN(ss[i], ":", 2)
 
 		actionStr := tmp[0]
-		action, err := newAction(actionStr, servers)
+		action, err := NewAction(actionStr, servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid ip policy at index %d: %w", i, err)
 		}
@@ -123,7 +64,7 @@ func newIPPolicies(s string, servers map[string]upstream.Upstream) (*ipPolicies,
 		if len(tmp) == 2 {
 			file := tmp[1]
 			if len(file) != 0 {
-				m, err := matcher.NewIPMatcherFromFile(file)
+				m, err := netlist.NewIPMatcherFromFile(file)
 				if err != nil {
 					return nil, fmt.Errorf("failed to load ip file from %s, %w", file, err)
 				}
@@ -137,7 +78,7 @@ func newIPPolicies(s string, servers map[string]upstream.Upstream) (*ipPolicies,
 	return ipps, nil
 }
 
-func (ps *ipPolicies) check(ip net.IP) *action {
+func (ps *IPPolicies) Match(ip net.IP) *Action {
 	for i := range ps.policies {
 		if ps.policies[i].matcher == nil { // nil matcher means match-all
 			return ps.policies[i].action
@@ -151,8 +92,8 @@ func (ps *ipPolicies) check(ip net.IP) *action {
 	return nil
 }
 
-func newDomainPolicies(s string, servers map[string]upstream.Upstream, allowRedirect bool) (*domainPolicies, error) {
-	dps := new(domainPolicies)
+func NewDomainPolicies(s string, servers map[string]upstream.Upstream) (*DomainPolicies, error) {
+	dps := new(DomainPolicies)
 	dps.policies = make([]*domainPolicy, 0)
 
 	ss := strings.Split(s, "|")
@@ -162,12 +103,9 @@ func newDomainPolicies(s string, servers map[string]upstream.Upstream, allowRedi
 		tmp := strings.SplitN(ss[i], ":", 2)
 
 		actionStr := tmp[0]
-		action, err := newAction(actionStr, servers)
+		action, err := NewAction(actionStr, servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid domain policy at index %d: %w", i, err)
-		}
-		if !allowRedirect && action.mode == policyActionRedirect {
-			return nil, fmt.Errorf("invalid domain policy at index %d: redirect mode is not allowed here", i)
 		}
 
 		dp.action = action
@@ -175,7 +113,7 @@ func newDomainPolicies(s string, servers map[string]upstream.Upstream, allowRedi
 		if len(tmp) == 2 {
 			file := tmp[1]
 			if len(file) != 0 {
-				m, err := matcher.NewDomainMatcherFormFile(file)
+				m, err := domain.NewDomainMatcherFormFile(file)
 				if err != nil {
 					return nil, fmt.Errorf("failed to load domain file from %s, %w", file, err)
 				}
@@ -189,10 +127,10 @@ func newDomainPolicies(s string, servers map[string]upstream.Upstream, allowRedi
 	return dps, nil
 }
 
-func (ps *domainPolicies) check(fqdn string) *action {
+func (ps *DomainPolicies) Match(fqdn string) *Action {
 	for i := range ps.policies {
-		if ps.policies[i].matcher == nil {
-			return ps.policies[i].action
+		if ps.policies[i].matcher == nil { // a policy without a matcher is a default policy
+			return ps.policies[i].action // return its action
 		}
 
 		if ps.policies[i].matcher != nil && ps.policies[i].matcher.Match(fqdn) {

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/config"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/policy"
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/upstream"
 	"github.com/miekg/dns"
 	"net"
@@ -34,14 +35,14 @@ type upstreamEntry struct {
 
 	policies struct {
 		query struct {
-			unhandlableTypes *action
-			Domain           *domainPolicies
+			unhandlableTypes *policy.Action
+			Domain           *policy.DomainPolicies
 		}
 		reply struct {
-			errorRcode *action
-			cname      *domainPolicies
-			withoutIP  *action
-			ip         *ipPolicies
+			errorRcode *policy.Action
+			cname      *policy.DomainPolicies
+			withoutIP  *policy.Action
+			ip         *policy.IPPolicies
 		}
 	}
 
@@ -65,7 +66,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 
 	// load policies
 	if len(uc.Policies.Query.UnhandlableTypes) != 0 {
-		action, err := newAction(uc.Policies.Query.UnhandlableTypes, d.servers)
+		action, err := policy.NewAction(uc.Policies.Query.UnhandlableTypes, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid unhandlable types action [%s]: %w", uc.Policies.Query.UnhandlableTypes, err)
 		}
@@ -73,7 +74,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Query.Domain) != 0 {
-		p, err := newDomainPolicies(uc.Policies.Query.Domain, nil, false)
+		p, err := policy.NewDomainPolicies(uc.Policies.Query.Domain, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load domain policies, %w", err)
 		}
@@ -81,7 +82,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Reply.ErrorRcode) != 0 {
-		action, err := newAction(uc.Policies.Reply.ErrorRcode, d.servers)
+		action, err := policy.NewAction(uc.Policies.Reply.ErrorRcode, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid err rcode action [%s]: %w", uc.Policies.Reply.ErrorRcode, err)
 		}
@@ -89,7 +90,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Reply.CNAME) != 0 {
-		p, err := newDomainPolicies(uc.Policies.Reply.CNAME, d.servers, true)
+		p, err := policy.NewDomainPolicies(uc.Policies.Reply.CNAME, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load cname policies, %w", err)
 		}
@@ -97,7 +98,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Reply.WithoutIP) != 0 {
-		action, err := newAction(uc.Policies.Reply.WithoutIP, d.servers)
+		action, err := policy.NewAction(uc.Policies.Reply.WithoutIP, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("invalid without ip action [%s]: %w", uc.Policies.Reply.WithoutIP, err)
 		}
@@ -105,7 +106,7 @@ func (d *Dispatcher) newEntry(name string, uc *config.UpstreamEntryConfig) (*ups
 	}
 
 	if len(uc.Policies.Reply.IP) != 0 {
-		p, err := newIPPolicies(uc.Policies.Reply.IP, d.servers)
+		p, err := policy.NewIPPolicies(uc.Policies.Reply.IP, d.servers)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load ip policies, %w", err)
 		}
@@ -129,31 +130,31 @@ func (u *upstreamEntry) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 	// check msg type
 	if isUnhandlableType(q) {
 		if action := u.policies.query.unhandlableTypes; action != nil {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: query is unhandlable type, action [%s]", u.name, q.Question, q.Id, action.mode)
-			switch action.mode {
-			case policyActionAccept:
+			logger.GetStd().Debugf("upstream %s: [%v %d]: query is unhandlable type, action [%s]", u.name, q.Question, q.Id, action.Mode)
+			switch action.Mode {
+			case policy.PolicyActionAccept:
 				return u.backend.Exchange(ctx, q)
-			case policyActionDeny:
+			case policy.PolicyActionDeny:
 				return nil, nil
-			case policyActionRedirect:
-				return action.redirect.Exchange(ctx, q)
+			case policy.PolicyActionRedirect:
+				return action.Redirect.Exchange(ctx, q)
 			default:
-				return nil, fmt.Errorf("unexpected unhandlableTypes action [%s]", action.mode)
+				return nil, fmt.Errorf("unexpected unhandlableTypes action [%s]", action.Mode)
 			}
 		}
 	}
 
 	// check domain
 	if u.policies.query.Domain != nil {
-		if action := u.policies.query.Domain.check(q.Question[0].Name); action != nil {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: query is matched by domain, action [%s]", u.name, q.Question, q.Id, action.mode)
-			switch action.mode {
-			case policyActionAccept:
+		if action := u.policies.query.Domain.Match(q.Question[0].Name); action != nil {
+			logger.GetStd().Debugf("upstream %s: [%v %d]: query is matched by domain, action [%s]", u.name, q.Question, q.Id, action.Mode)
+			switch action.Mode {
+			case policy.PolicyActionAccept:
 				return u.backend.Exchange(ctx, q)
-			case policyActionDeny:
+			case policy.PolicyActionDeny:
 				return nil, nil
 			default:
-				return nil, fmt.Errorf("unexpected domain action [%s]", action.mode)
+				return nil, fmt.Errorf("unexpected domain action [%s]", action.Mode)
 			}
 		}
 	}
@@ -168,16 +169,16 @@ func (u *upstreamEntry) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 	// check Rcode
 	if r.Rcode != dns.RcodeSuccess {
 		if action := u.policies.reply.errorRcode; action != nil {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: reply has a error rcode, action [%s]", u.name, q.Question, q.Id, action.mode)
-			switch action.mode {
-			case policyActionAccept:
+			logger.GetStd().Debugf("upstream %s: [%v %d]: reply has a error rcode, action [%s]", u.name, q.Question, q.Id, action.Mode)
+			switch action.Mode {
+			case policy.PolicyActionAccept:
 				return r, nil
-			case policyActionDeny:
+			case policy.PolicyActionDeny:
 				return nil, nil
-			case policyActionRedirect:
-				return action.redirect.Exchange(ctx, q)
+			case policy.PolicyActionRedirect:
+				return action.Redirect.Exchange(ctx, q)
 			default:
-				return nil, fmt.Errorf("unexpected errorRcode action [%s]", action.mode)
+				return nil, fmt.Errorf("unexpected errorRcode action [%s]", action.Mode)
 			}
 		}
 	}
@@ -185,16 +186,16 @@ func (u *upstreamEntry) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 	// check CNAME
 	if u.policies.reply.cname != nil {
 		if action := checkMsgCNAME(u.policies.reply.cname, r); action != nil {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: reply cname matched, action [%s]", u.name, q.Question, q.Id, action.mode)
-			switch action.mode {
-			case policyActionAccept:
+			logger.GetStd().Debugf("upstream %s: [%v %d]: reply cname matched, action [%s]", u.name, q.Question, q.Id, action.Mode)
+			switch action.Mode {
+			case policy.PolicyActionAccept:
 				return r, nil
-			case policyActionDeny:
+			case policy.PolicyActionDeny:
 				return nil, nil
-			case policyActionRedirect:
-				return action.redirect.Exchange(ctx, q)
+			case policy.PolicyActionRedirect:
+				return action.Redirect.Exchange(ctx, q)
 			default:
-				return nil, fmt.Errorf("unexpected cname action [%s]", action.mode)
+				return nil, fmt.Errorf("unexpected cname action [%s]", action.Mode)
 			}
 		}
 	}
@@ -202,32 +203,32 @@ func (u *upstreamEntry) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 	// check ip
 	if checkMsgHasValidIP(r) == false {
 		if action := u.policies.reply.withoutIP; action != nil {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: reply don not has any valid ip, action [%s]", u.name, q.Question, q.Id, action.mode)
-			switch action.mode {
-			case policyActionAccept:
+			logger.GetStd().Debugf("upstream %s: [%v %d]: reply don not has any valid ip, action [%s]", u.name, q.Question, q.Id, action.Mode)
+			switch action.Mode {
+			case policy.PolicyActionAccept:
 				return r, nil
-			case policyActionDeny:
+			case policy.PolicyActionDeny:
 				return nil, nil
-			case policyActionRedirect:
-				return action.redirect.Exchange(ctx, q)
+			case policy.PolicyActionRedirect:
+				return action.Redirect.Exchange(ctx, q)
 			default:
-				return nil, fmt.Errorf("unexpected cname action [%s]", action.mode)
+				return nil, fmt.Errorf("unexpected cname action [%s]", action.Mode)
 			}
 		}
 	}
 
 	if u.policies.reply.ip != nil {
 		if action := checkMsgIP(u.policies.reply.ip, r); action != nil {
-			logger.GetStd().Debugf("upstream %s: [%v %d]: reply ip matched, action [%s]", u.name, q.Question, q.Id, action.mode)
-			switch action.mode {
-			case policyActionAccept:
+			logger.GetStd().Debugf("upstream %s: [%v %d]: reply ip matched, action [%s]", u.name, q.Question, q.Id, action.Mode)
+			switch action.Mode {
+			case policy.PolicyActionAccept:
 				return r, nil
-			case policyActionDeny:
+			case policy.PolicyActionDeny:
 				return nil, nil
-			case policyActionRedirect:
-				return action.redirect.Exchange(ctx, q)
+			case policy.PolicyActionRedirect:
+				return action.Redirect.Exchange(ctx, q)
 			default:
-				return nil, fmt.Errorf("unexpected ip action [%s]", action.mode)
+				return nil, fmt.Errorf("unexpected ip action [%s]", action.Mode)
 			}
 		}
 	}
@@ -237,7 +238,7 @@ func (u *upstreamEntry) exchange(ctx context.Context, q *dns.Msg) (r *dns.Msg, e
 }
 
 // checkMsgIP checks m's ip RR in answer section. If ip is a
-func checkMsgIP(p *ipPolicies, m *dns.Msg) *action {
+func checkMsgIP(p *policy.IPPolicies, m *dns.Msg) *policy.Action {
 	for i := range m.Answer {
 		var ip net.IP
 		switch rr := m.Answer[i].(type) {
@@ -249,16 +250,16 @@ func checkMsgIP(p *ipPolicies, m *dns.Msg) *action {
 			continue
 		}
 
-		action := p.check(ip)
+		action := p.Match(ip)
 		return action
 	}
 	return nil
 }
 
-func checkMsgCNAME(p *domainPolicies, m *dns.Msg) *action {
+func checkMsgCNAME(p *policy.DomainPolicies, m *dns.Msg) *policy.Action {
 	for i := range m.Answer {
 		if cname, ok := m.Answer[i].(*dns.CNAME); ok {
-			a := p.check(cname.Target)
+			a := p.Match(cname.Target)
 			if a != nil {
 				return a
 			}
