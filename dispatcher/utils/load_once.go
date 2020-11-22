@@ -18,23 +18,11 @@
 package utils
 
 import (
+	"io/ioutil"
+	"os"
 	"sync"
 	"time"
 )
-
-var globalCache = NewCache()
-
-func Put(key string, data interface{}, ttl time.Duration) {
-	globalCache.Put(key, data, ttl)
-}
-
-func Remove(key string) {
-	globalCache.Remove(key)
-}
-
-func Load(key string) (interface{}, bool) {
-	return globalCache.Load(key)
-}
 
 type LoadOnceCache struct {
 	l     sync.Mutex
@@ -70,4 +58,26 @@ func (c *LoadOnceCache) Load(key string) (interface{}, bool) {
 
 	data, ok := c.cache[key]
 	return data, ok
+}
+
+func (c *LoadOnceCache) LoadFromCacheOrRawDisk(file string) (interface{}, []byte, error) {
+	// load from cache
+	data, ok := c.Load(file)
+	if ok {
+		return data, nil, nil
+	}
+
+	// load from disk
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+
+	b, err := ioutil.ReadAll(f)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return nil, b, nil
 }

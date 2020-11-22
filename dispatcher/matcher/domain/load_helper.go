@@ -15,33 +15,40 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package matcher
+package domain
 
 import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher/logger"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher/domain"
 	"github.com/golang/protobuf/proto"
 	"github.com/miekg/dns"
 	"v2ray.com/core/app/router"
 )
 
+var matcherCache = utils.NewCache()
+
+const (
+	cacheTTL = time.Second * 30
+)
+
 // NewDomainMatcherFormFile loads a list matcher or a v2fly matcher from file.
 // if file has a ':' and has format like 'geosite:cn', a v2fly matcher will be returned.
-func NewDomainMatcherFormFile(file string) (domain.Matcher, error) {
-	e, ok := loadFromCache(file)
+func NewDomainMatcherFormFile(file string) (Matcher, error) {
+	e, ok := matcherCache.Load(file)
 	if ok {
-		if m, ok := e.(domain.Matcher); ok {
+		if m, ok := e.(Matcher); ok {
 			return m, nil
 		}
 	}
 
-	var m domain.Matcher
+	var m Matcher
 	var err error
 	if strings.Contains(file, ":") {
 		tmp := strings.SplitN(file, ":", 2)
@@ -53,29 +60,29 @@ func NewDomainMatcherFormFile(file string) (domain.Matcher, error) {
 		return nil, err
 	}
 
-	cacheData(file, m)
+	matcherCache.Put(file, m, cacheTTL)
 	return m, nil
 }
 
-func NewDomainListMatcherFormFile(file string, continueOnInvalidString bool) (domain.Matcher, error) {
-	data, raw, err := loadFromCacheOrRawDisk(file)
+func NewDomainListMatcherFormFile(file string, continueOnInvalidString bool) (Matcher, error) {
+	data, raw, err := matcherCache.LoadFromCacheOrRawDisk(file)
 	if err != nil {
 		return nil, err
 	}
 
-	if m, ok := data.(domain.Matcher); ok {
+	if m, ok := data.(Matcher); ok {
 		return m, nil
 	}
 	m, err := NewDomainListMatcherFormReader(bytes.NewBuffer(raw), continueOnInvalidString)
 	if err != nil {
 		return nil, err
 	}
-	cacheData(file, m)
+	matcherCache.Put(file, m, cacheTTL)
 	return m, nil
 }
 
-func NewDomainListMatcherFormReader(r io.Reader, continueOnInvalidString bool) (domain.Matcher, error) {
-	l := domain.NewListMatcher()
+func NewDomainListMatcherFormReader(r io.Reader, continueOnInvalidString bool) (Matcher, error) {
+	l := NewListMatcher()
 
 	lineCounter := 0
 	s := bufio.NewScanner(r)
@@ -102,12 +109,12 @@ func NewDomainListMatcherFormReader(r io.Reader, continueOnInvalidString bool) (
 	return l, nil
 }
 
-func NewV2MatcherFromFile(file, tag string) (domain.Matcher, error) {
+func NewV2MatcherFromFile(file, tag string) (Matcher, error) {
 	domains, err := loadV2DomainsFromDAT(file, tag)
 	if err != nil {
 		return nil, err
 	}
-	return domain.NewV2Matcher(domains)
+	return NewV2Matcher(domains)
 }
 
 func loadV2DomainsFromDAT(file, tag string) ([]*router.Domain, error) {
@@ -135,7 +142,7 @@ func loadGeoSiteFromDAT(file, tag string) (*router.GeoSite, error) {
 }
 
 func loadGeoSiteListFromDAT(file string) (*router.GeoSiteList, error) {
-	data, raw, err := loadFromCacheOrRawDisk(file)
+	data, raw, err := matcherCache.LoadFromCacheOrRawDisk(file)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +158,6 @@ func loadGeoSiteListFromDAT(file string) (*router.GeoSiteList, error) {
 	}
 
 	// cache the file
-	cacheData(file, geoSiteList)
+	matcherCache.Put(file, geoSiteList, cacheTTL)
 	return geoSiteList, nil
 }

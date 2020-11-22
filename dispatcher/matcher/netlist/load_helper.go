@@ -15,28 +15,35 @@
 //     You should have received a copy of the GNU General Public License
 //     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package matcher
+package netlist
 
 import (
 	"bytes"
 	"fmt"
-	"github.com/IrineSistiana/mos-chinadns/dispatcher/matcher/netlist"
+	"github.com/IrineSistiana/mos-chinadns/dispatcher/utils"
 	"github.com/golang/protobuf/proto"
 	"strings"
+	"time"
 	"v2ray.com/core/app/router"
+)
+
+var matcherCache = utils.NewCache()
+
+const (
+	cacheTTL = time.Second * 30
 )
 
 // NewIPMatcherFromFile loads a netlist file a list or geoip file.
 // if file contains a ':' and has format like 'geoip:cn', file must be a geoip file.
-func NewIPMatcherFromFile(file string) (netlist.Matcher, error) {
-	e, ok := loadFromCache(file)
+func NewIPMatcherFromFile(file string) (Matcher, error) {
+	e, ok := matcherCache.Load(file)
 	if ok {
-		if m, ok := e.(netlist.Matcher); ok {
+		if m, ok := e.(Matcher); ok {
 			return m, nil
 		}
 	}
 
-	var m netlist.Matcher
+	var m Matcher
 	var err error
 	if strings.Contains(file, ":") {
 		tmp := strings.SplitN(file, ":", 2)
@@ -49,32 +56,32 @@ func NewIPMatcherFromFile(file string) (netlist.Matcher, error) {
 		return nil, err
 	}
 
-	cacheData(file, m)
+	matcherCache.Put(file, m, cacheTTL)
 	return m, nil
 }
 
 // NewListFromFile read IP list from a file, the returned NetList is already been sorted.
-func NewListFromListFile(file string, continueOnInvalidString bool) (netlist.Matcher, error) {
-	data, raw, err := loadFromCacheOrRawDisk(file)
+func NewListFromListFile(file string, continueOnInvalidString bool) (Matcher, error) {
+	data, raw, err := matcherCache.LoadFromCacheOrRawDisk(file)
 	if err != nil {
 		return nil, err
 	}
 
 	// load from cache
-	if nl, ok := data.(*netlist.List); ok {
+	if nl, ok := data.(*List); ok {
 		return nl, nil
 	}
 	// load from disk
-	return netlist.NewListFromReader(bytes.NewBuffer(raw), continueOnInvalidString)
+	return NewListFromReader(bytes.NewBuffer(raw), continueOnInvalidString)
 }
 
-func NewNetListFromDAT(file, tag string) (netlist.Matcher, error) {
+func NewNetListFromDAT(file, tag string) (Matcher, error) {
 	cidrList, err := loadV2CIDRListFromDAT(file, tag)
 	if err != nil {
 		return nil, err
 	}
 
-	return netlist.NewV2Matcher(cidrList)
+	return NewV2Matcher(cidrList)
 }
 
 func loadV2CIDRListFromDAT(file, tag string) ([]*router.CIDR, error) {
@@ -102,7 +109,7 @@ func loadGeoIPFromDAT(file, tag string) (*router.GeoIP, error) {
 }
 
 func loadGeoIPListFromDAT(file string) (*router.GeoIPList, error) {
-	data, raw, err := loadFromCacheOrRawDisk(file)
+	data, raw, err := matcherCache.LoadFromCacheOrRawDisk(file)
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +125,6 @@ func loadGeoIPListFromDAT(file string) (*router.GeoIPList, error) {
 	}
 
 	// cache the file
-	cacheData(file, geoIPList)
+	matcherCache.Put(file, geoIPList, cacheTTL)
 	return geoIPList, nil
 }
