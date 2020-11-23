@@ -204,7 +204,10 @@ func (d *Dispatcher) StartServer() error {
 			defer l.Close()
 			logger.GetStd().Infof("StartServer: tcp server started at %s", l.Addr())
 
-			s = server.NewTCPServer(l, d)
+			serverConf := server.Config{
+				Listener: l,
+			}
+			s = server.NewTCPServer(&serverConf)
 
 		case "udp", "udp4", "udp6":
 			l, err := net.ListenPacket(network, addr)
@@ -213,14 +216,17 @@ func (d *Dispatcher) StartServer() error {
 			}
 			defer l.Close()
 			logger.GetStd().Infof("StartServer: udp server started at %s", l.LocalAddr())
-
-			s = server.NewUDPServer(l, d, d.config.Dispatcher.MaxUDPSize)
+			serverConf := server.Config{
+				PacketConn:        l,
+				MaxUDPPayloadSize: d.config.Dispatcher.MaxUDPSize,
+			}
+			s = server.NewUDPServer(&serverConf)
 		default:
 			return fmt.Errorf("invalid bind protocol: %s", network)
 		}
 
 		go func() {
-			err := s.ListenAndServe()
+			err := s.ListenAndServe(d)
 			select {
 			case errChan <- err:
 			default:

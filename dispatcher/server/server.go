@@ -20,11 +20,12 @@ package server
 import (
 	"context"
 	"github.com/miekg/dns"
+	"net"
 	"time"
 )
 
 type Server interface {
-	ListenAndServe() error
+	ListenAndServe(h Handler) error
 }
 
 type Handler interface {
@@ -34,3 +35,17 @@ type Handler interface {
 const (
 	queryTimeout = time.Second * 5
 )
+
+type Config struct {
+	// listener for tcp server
+	Listener net.Listener
+
+	// socket for udp server
+	PacketConn net.PacketConn
+
+	// tcp idle timeout
+	Timeout time.Duration
+
+	// udp read buffer size
+	MaxUDPPayloadSize int
+}

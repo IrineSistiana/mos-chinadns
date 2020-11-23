@@ -33,17 +33,21 @@ const (
 
 type tcpServer struct {
 	l       net.Listener
-	handler Handler
+	timeout time.Duration
 }
 
-func NewTCPServer(l net.Listener, h Handler) Server {
-	return &tcpServer{
-		l:       l,
-		handler: h,
+func NewTCPServer(c *Config) Server {
+	s := new(tcpServer)
+	s.l = c.Listener
+	if c.Timeout > 0 {
+		s.timeout = c.Timeout
+	} else {
+		s.timeout = serverTCPReadTimeout
 	}
+	return s
 }
 
-func (s *tcpServer) ListenAndServe() error {
+func (s *tcpServer) ListenAndServe(h Handler) error {
 	listenerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -79,7 +83,7 @@ func (s *tcpServer) ListenAndServe() error {
 
 					logger.GetStd().Debugf("tcp server %s: [%v %d]: new query from %s,", s.l.Addr(), q.Question, q.Id, c.RemoteAddr())
 
-					r, err := s.handler.ServeDNS(queryCtx, q)
+					r, err := h.ServeDNS(queryCtx, q)
 					if err != nil {
 						logger.GetStd().Warnf("tcp server %s: [%v %d]: query failed: %v", s.l.Addr(), q.Question, q.Id, err)
 					}

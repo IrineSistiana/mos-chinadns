@@ -32,32 +32,33 @@ const (
 )
 
 type udpServer struct {
-	c           net.PacketConn
-	handler     Handler
+	socket      net.PacketConn
 	readBufSize int
 }
 
-func NewUDPServer(c net.PacketConn, h Handler, readBufSize int) Server {
-	if readBufSize < dns.MinMsgSize {
-		readBufSize = dns.MinMsgSize
-	}
-	if readBufSize > dns.MaxMsgSize {
-		readBufSize = dns.MaxMsgSize
+func NewUDPServer(c *Config) Server {
+	s := new(udpServer)
+
+	switch {
+	case c.MaxUDPPayloadSize < dns.MinMsgSize:
+		s.readBufSize = dns.MinMsgSize
+	case c.MaxUDPPayloadSize > dns.MaxMsgSize:
+		s.readBufSize = dns.MaxMsgSize
+	default:
+		s.readBufSize = c.MaxUDPPayloadSize
 	}
 
-	return &udpServer{
-		c:           c,
-		handler:     h,
-		readBufSize: readBufSize,
-	}
+	s.socket = c.PacketConn
+
+	return s
 }
 
-func (s *udpServer) ListenAndServe() error {
+func (s *udpServer) ListenAndServe(h Handler) error {
 	listenerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	for {
-		q, from, _, err := utils.ReadUDPMsgFrom(s.c, s.readBufSize)
+		q, from, _, err := utils.ReadUDPMsgFrom(s.socket, s.readBufSize)
 		if err != nil {
 			netErr, ok := err.(net.Error)
 			if ok { // is a net err
@@ -77,11 +78,11 @@ func (s *udpServer) ListenAndServe() error {
 			queryCtx, cancel := context.WithTimeout(listenerCtx, queryTimeout)
 			defer cancel()
 
-			logger.GetStd().Debugf("udp server %s: [%v %d]: new query from %s", s.c.LocalAddr(), q.Question, q.Id, from)
+			logger.GetStd().Debugf("udp server %s: [%v %d]: new query from %s", s.socket.LocalAddr(), q.Question, q.Id, from)
 
-			r, err := s.handler.ServeDNS(queryCtx, q)
+			r, err := h.ServeDNS(queryCtx, q)
 			if err != nil {
-				logger.GetStd().Warnf("udp server %s: [%v %d]: query failed: %v", s.c.LocalAddr(), q.Question, q.Id, err)
+				logger.GetStd().Warnf("udp server %s: [%v %d]: query failed: %v", s.socket.LocalAddr(), q.Question, q.Id, err)
 			}
 
 			if r != nil {
@@ -95,10 +96,10 @@ func (s *udpServer) ListenAndServe() error {
 
 				r.Truncate(udpSize)
 
-				s.c.SetWriteDeadline(time.Now().Add(serverUDPWriteTimeout))
-				_, err = utils.WriteUDPMsgTo(r, s.c, from)
+				s.socket.SetWriteDeadline(time.Now().Add(serverUDPWriteTimeout))
+				_, err = utils.WriteUDPMsgTo(r, s.socket, from)
 				if err != nil {
-					logger.GetStd().Warnf("udp server %s: [%v %d]: failed to send reply back: %v", s.c.LocalAddr(), q.Question, q.Id, err)
+					logger.GetStd().Warnf("udp server %s: [%v %d]: failed to send reply back: %v", s.socket.LocalAddr(), q.Question, q.Id, err)
 				}
 			}
 		}()
