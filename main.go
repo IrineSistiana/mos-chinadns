@@ -37,9 +37,9 @@ import (
 
 	"github.com/IrineSistiana/mos-chinadns/dispatcher"
 
+	"net/http"
 	//DEBUG ONLY
-	//_ "net/http/pprof"
-	//"net/http"
+	_ "net/http/pprof"
 
 	"github.com/sirupsen/logrus"
 )
@@ -66,7 +66,7 @@ var (
 	benchDomainListFile = flag.String("bench-domain-list", "", "[path] benchmark domain search using this file")
 
 	//DEBUG ONLY
-	//pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
+	pprofAddr = flag.String("pprof", "", "[ip:port] DEBUG ONLY, hook http/pprof at this address")
 )
 
 func main() {
@@ -83,13 +83,14 @@ func main() {
 	runtime.GOMAXPROCS(*cpu)
 
 	//DEBUG ONLY
-	//if len(*pprofAddr) != 0 {
-	//	go func() {
-	//		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
-	//			entry.Fatal("pprof backend is exited: %v", err)
-	//		}
-	//	}()
-	//}
+	if len(*pprofAddr) != 0 {
+		go func() {
+			logrus.Infof("pprof backend is starting at: %v", *pprofAddr)
+			if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+				logrus.Fatal("pprof backend is exited: %v", err)
+			}
+		}()
+	}
 
 	// helper function
 
