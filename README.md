@@ -1,5 +1,9 @@
 # mos-chinadns
 
+mos-chinadns 现已更名为 mosdns 。这里是 mos-chinadns 的备份。请移步至新项目: [mosdns](https://github.com/IrineSistiana/mosdns)
+
+---
+
 全部功能、教程和配置说明和示例，详见：[wiki](https://github.com/IrineSistiana/mos-chinadns/wiki)
 
 下载地址、更新日志，详见：[release](https://github.com/IrineSistiana/mos-chinadns/releases)
