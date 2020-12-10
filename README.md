@@ -1,6 +1,6 @@
 # mos-chinadns
 
-**这里是 mos-chinadns 的备份。mos-chinadns 现已更名为 mosdns ，一个插件化的 DNS 分流器。新项目地址: [mosdns](https://github.com/IrineSistiana/mosdns)**
+**mos-chinadns 现已被 mosdns 替代，不再更新。mosdns 是一个插件化的 DNS 分流器，保留了 mos-chinadns 的特性，但更灵活，有更多功能。新项目地址: [mosdns](https://github.com/IrineSistiana/mosdns)**
 
 ---
 
