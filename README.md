@@ -1,12 +1,10 @@
 # mos-chinadns
 
-**mos-chinadns 现已被 mosdns 替代，不再更新。mosdns 是一个插件化的 DNS 分流器，保留了 mos-chinadns 的特性，但更灵活，有更多功能。新项目地址: [mosdns](https://github.com/IrineSistiana/mosdns)**
+**Note:**
 
----
+mos-chinadns 现已被 mosdns 替代。mosdns 是一个插件化的 DNS 分流器，保留了 mos-chinadns 的特性，但更灵活，有更多功能。新项目地址: [mosdns](https://github.com/IrineSistiana/mosdns)
 
-全部功能、教程和配置说明和示例，详见：[wiki](https://github.com/IrineSistiana/mos-chinadns/wiki)
-
-下载地址、更新日志，详见：[release](https://github.com/IrineSistiana/mos-chinadns/releases)
+切换到 mosdns 很简单。[mosdns 的配置示例 wiki 里](https://github.com/IrineSistiana/mosdns/wiki/Configuration#%E9%85%8D%E7%BD%AE%E7%A4%BA%E4%BE%8B) 有一个和 mos-chinadns 默认配置功能一样的配置，复制后即可使用。
 
 ---
 
